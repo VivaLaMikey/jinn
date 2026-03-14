@@ -234,6 +234,14 @@ export interface DiscordConnectorConfig {
   guildId?: string;
 }
 
+export interface WhatsAppConnectorConfig {
+  /** Where to store session credentials (default: JINN_HOME/.whatsapp-auth) */
+  authDir?: string;
+  /** Allowed phone numbers in JID format (e.g. "447700900000@s.whatsapp.net") — empty = allow all */
+  allowFrom?: string[];
+  ignoreOldMessagesOnBoot?: boolean;
+}
+
 export interface PortalConfig {
   portalName?: string;
   operatorName?: string;
@@ -252,6 +260,7 @@ export interface JinnConfig {
     web?: WebConnectorConfig;
     slack?: SlackConnectorConfig;
     discord?: DiscordConnectorConfig;
+    whatsapp?: WhatsAppConnectorConfig;
   };
   logging: { file: boolean; stdout: boolean; level: string };
   mcp?: McpGlobalConfig;

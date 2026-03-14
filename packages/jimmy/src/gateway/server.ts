@@ -15,7 +15,11 @@ import { handleApiRequest, type ApiContext } from "./api.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
+<<<<<<< HEAD
 import { DiscordConnector } from "../connectors/discord/index.js";
+=======
+import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
+>>>>>>> feat/whatsapp-connector
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
 import { scanOrg } from "./org.js";
@@ -121,8 +125,13 @@ export async function startGateway(
   if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
     connectorNames.push("slack");
   }
+<<<<<<< HEAD
   if (config.connectors?.discord?.botToken) {
     connectorNames.push("discord");
+=======
+  if (config.connectors?.whatsapp) {
+    connectorNames.push("whatsapp");
+>>>>>>> feat/whatsapp-connector
   }
 
   // Session manager
@@ -157,6 +166,7 @@ export async function startGateway(
     }
   }
 
+<<<<<<< HEAD
   if (config.connectors?.discord?.botToken) {
     try {
       const discord = new DiscordConnector(config.connectors.discord);
@@ -171,6 +181,22 @@ export async function startGateway(
       logger.info("Discord connector started");
     } catch (err) {
       logger.error(`Failed to start Discord connector: ${err instanceof Error ? err.message : err}`);
+=======
+  if (config.connectors?.whatsapp) {
+    try {
+      const whatsapp = new WhatsAppConnector(config.connectors.whatsapp ?? {});
+      whatsapp.onMessage((msg) => {
+        sessionManager.route(msg, whatsapp).catch((err) => {
+          logger.error(`WhatsApp route error: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+      await whatsapp.start();
+      connectors.push(whatsapp);
+      connectorMap.set("whatsapp", whatsapp);
+      logger.info("WhatsApp connector started (scan QR code if first run)");
+    } catch (err) {
+      logger.error(`Failed to start WhatsApp connector: ${err instanceof Error ? err.message : err}`);
+>>>>>>> feat/whatsapp-connector
     }
   }
 

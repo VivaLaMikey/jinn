@@ -52,6 +52,10 @@ interface Config {
       allowFrom?: string | string[]
       guildId?: string
     }
+    whatsapp?: {
+      authDir?: string
+      allowFrom?: string[]
+    }
     web?: Record<string, never>
   }
   logging?: {
@@ -1354,6 +1358,51 @@ export default function SettingsPage() {
                       updateConfig(["connectors", "discord", "guildId"], v.trim() || undefined)
                     }
                     placeholder="Server/Guild ID (optional)"
+                  />
+                </FieldRow>
+
+                {/* WhatsApp */}
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    fontWeight: "var(--weight-semibold)",
+                    color: "var(--text-tertiary)",
+                    marginTop: "var(--space-4)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  WhatsApp
+                </div>
+                <div
+                  style={{
+                    fontSize: "var(--text-caption2)",
+                    color: "var(--text-tertiary)",
+                    marginBottom: "var(--space-3)",
+                  }}
+                >
+                  On first start, a QR code will appear in the Jinn logs — scan it with your WhatsApp app to connect. Credentials are cached for subsequent runs.
+                </div>
+                <FieldRow label="Auth Directory">
+                  <SettingsInput
+                    value={config.connectors?.whatsapp?.authDir ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "whatsapp", "authDir"], v.trim() || undefined)
+                    }
+                    placeholder="Default: ~/.jinn/.whatsapp-auth"
+                  />
+                </FieldRow>
+                <FieldRow label="Allow From">
+                  <SettingsInput
+                    value={Array.isArray(config.connectors?.whatsapp?.allowFrom)
+                      ? config.connectors?.whatsapp?.allowFrom?.join(", ")
+                      : ""}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["connectors", "whatsapp", "allowFrom"],
+                        v.trim() ? v.split(",").map((entry) => entry.trim()).filter(Boolean) : undefined,
+                      )
+                    }
+                    placeholder="447700900000@s.whatsapp.net, ... (optional)"
                   />
                 </FieldRow>
 
