@@ -47,6 +47,7 @@ export class WhatsAppConnector implements Connector {
   private connectionStatus: "starting" | "running" | "stopped" | "error" | "qr_pending" = "starting";
   private lastError: string | null = null;
   private authDir: string;
+  private latestQr: string | null = null;
 
   private readonly capabilities: ConnectorCapabilities = {
     threading: false,
@@ -83,10 +84,12 @@ export class WhatsAppConnector implements Connector {
 
     this.sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
       if (qr) {
+        this.latestQr = qr;
         this.connectionStatus = "qr_pending";
         logger.info("WhatsApp QR code generated — scan with your WhatsApp app to connect");
       }
       if (connection === "open") {
+        this.latestQr = null;
         this.connectionStatus = "running";
         this.lastError = null;
         logger.info("WhatsApp connector connected");
@@ -123,6 +126,10 @@ export class WhatsAppConnector implements Connector {
 
   getCapabilities(): ConnectorCapabilities {
     return this.capabilities;
+  }
+
+  getQrCode(): string | null {
+    return this.latestQr;
   }
 
   getHealth(): ConnectorHealth {

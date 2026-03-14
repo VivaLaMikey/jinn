@@ -37,6 +37,8 @@ import { resolveEffort } from "../shared/effort.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
+import QRCode from "qrcode";
+import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -797,6 +799,16 @@ export async function handleApiRequest(
         body.text,
       );
       return json(res, { status: "sent" });
+    }
+
+    // GET /api/connectors/whatsapp/qr — return current QR code as PNG data URL
+    if (method === "GET" && pathname === "/api/connectors/whatsapp/qr") {
+      const waConnector = context.connectors.get("whatsapp");
+      if (!waConnector) return notFound(res);
+      const qrString = (waConnector as WhatsAppConnector).getQrCode();
+      if (!qrString) return json(res, { qr: null });
+      const dataUrl = await QRCode.toDataURL(qrString, { width: 256, margin: 2 });
+      return json(res, { qr: dataUrl });
     }
 
     // GET /api/connectors — list available connectors

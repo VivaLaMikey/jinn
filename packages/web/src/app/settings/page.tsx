@@ -580,6 +580,10 @@ export default function SettingsPage() {
     message: string
   } | null>(null)
 
+  // WhatsApp QR code state
+  const [waQr, setWaQr] = useState<string | null>(null)
+  const [waStatus, setWaStatus] = useState<string>("unknown")
+
   // Sync local values when settings change externally (e.g., reset)
   useEffect(() => {
     setNameValue(settings.portalName ?? "")
@@ -613,6 +617,39 @@ export default function SettingsPage() {
   useEffect(() => {
     loadConfig()
   }, [])
+
+  // Poll for WhatsApp QR code when WhatsApp connector is configured
+  useEffect(() => {
+    if (!config.connectors?.whatsapp) return
+
+    let cancelled = false
+
+    async function checkQr() {
+      try {
+        const statusRes = await fetch("/api/status")
+        const status = await statusRes.json()
+        const connStatus = status?.connectors?.whatsapp?.status
+        if (!cancelled) setWaStatus(connStatus ?? "unknown")
+
+        if (connStatus === "qr_pending") {
+          const qrRes = await fetch("/api/connectors/whatsapp/qr")
+          const data = await qrRes.json()
+          if (!cancelled) setWaQr(data.qr)
+        } else {
+          if (!cancelled) setWaQr(null)
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
+    void checkQr()
+    const interval = setInterval(() => { void checkQr() }, 10000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [config.connectors?.whatsapp])
 
   function updateConfig(path: string[], value: unknown) {
     setConfig((prev) => {
@@ -1380,7 +1417,7 @@ export default function SettingsPage() {
                     marginBottom: "var(--space-3)",
                   }}
                 >
-                  On first start, a QR code will appear in the Jinn logs — scan it with your WhatsApp app to connect. Credentials are cached for subsequent runs.
+                  On first start, scan the QR code below with your WhatsApp app to connect. Credentials are cached for subsequent runs.
                 </div>
                 <FieldRow label="Auth Directory">
                   <SettingsInput
@@ -1405,6 +1442,60 @@ export default function SettingsPage() {
                     placeholder="447700900000@s.whatsapp.net, ... (optional)"
                   />
                 </FieldRow>
+
+                {waQr && (
+                  <div
+                    style={{
+                      marginTop: "var(--space-3)",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "var(--space-2)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "var(--text-caption1)",
+                        fontWeight: 600,
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      Scan with WhatsApp to connect
+                    </div>
+                    <img
+                      src={waQr}
+                      alt="WhatsApp QR Code"
+                      style={{
+                        width: 200,
+                        height: 200,
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid var(--separator)",
+                        background: "white",
+                        padding: 8,
+                      }}
+                    />
+                    <div
+                      style={{
+                        fontSize: "var(--text-caption2)",
+                        color: "var(--text-tertiary)",
+                      }}
+                    >
+                      Open WhatsApp → Linked Devices → Link a Device
+                    </div>
+                  </div>
+                )}
+                {config.connectors?.whatsapp && waStatus === "ok" && (
+                  <div
+                    style={{
+                      marginTop: "var(--space-2)",
+                      fontSize: "var(--text-caption1)",
+                      color: "var(--system-green)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    ✓ Connected
+                  </div>
+                )}
 
                 <div
                   style={{
