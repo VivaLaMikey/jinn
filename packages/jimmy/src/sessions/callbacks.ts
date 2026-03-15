@@ -76,6 +76,43 @@ async function _sendNotification(
   await _sendRaw(childSession.parentSessionId!, message);
 }
 
+/**
+ * Send a hardcoded notification to the configured Discord channel.
+ * Used for rate-limit alerts that must not depend on the LLM.
+ * Fire-and-forget — errors are logged but never rethrown.
+ */
+export function notifyDiscordChannel(message: string): void {
+  _sendDiscordNotification(message).catch((err) => {
+    logger.warn(`[callbacks] Failed to send Discord notification: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+async function _sendDiscordNotification(message: string): Promise<void> {
+  let port = 7777;
+  let connector = "discord";
+  let channel: string | undefined;
+
+  try {
+    const config = loadConfig();
+    port = config.gateway?.port || 7777;
+    connector = config.notifications?.connector || "discord";
+    channel = config.notifications?.channel;
+  } catch {
+    // Use defaults if config is unavailable
+  }
+
+  if (!channel) {
+    logger.debug("[callbacks] No notifications.channel configured — skipping Discord notification");
+    return;
+  }
+
+  await fetch(`http://127.0.0.1:${port}/api/connectors/${connector}/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channel, text: message }),
+  });
+}
+
 async function _sendRaw(parentSessionId: string, message: string): Promise<void> {
   let port = 7777;
   try {

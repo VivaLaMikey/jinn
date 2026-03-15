@@ -40,7 +40,7 @@ import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
-import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed } from "../sessions/callbacks.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -1447,6 +1447,9 @@ async function runWebSession(
     if (isRateLimited) {
       logger.info(`Web session ${currentSession.id} hit rate limit — will auto-retry in 60s`);
 
+      // Send hardcoded Discord notification — does not depend on LLM
+      notifyDiscordChannel(`⚠️ Rate limit hit. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ''} has been paused and will auto-resume when the limit resets.`);
+
       updateSession(currentSession.id, {
         status: "waiting",
         lastActivity: new Date().toISOString(),
@@ -1523,6 +1526,7 @@ async function runWebSession(
 
         if (completedAfterRetry) {
           notifyRateLimitResumed(completedAfterRetry);
+          notifyDiscordChannel(`✅ Rate limit reset. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ''} resuming.`);
           notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
         }
 
@@ -1541,6 +1545,7 @@ async function runWebSession(
       }
 
       // Exhausted retries
+      notifyDiscordChannel(`❌ Rate limit did not reset within 30 minutes. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ''} has been stopped.`);
       const erroredSession = updateSession(currentSession.id, {
         status: "error",
         lastActivity: new Date().toISOString(),

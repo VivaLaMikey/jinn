@@ -288,6 +288,10 @@ export interface JinnConfig {
     alertChannel?: string;
     alertConnector?: string;
   };
+  notifications?: {
+    connector?: string;  // defaults to "discord"
+    channel?: string;    // Discord channel ID for admin notifications
+  };
   portal?: PortalConfig;
   context?: {
     /** Max characters for the built system prompt. Defaults to 100000. */

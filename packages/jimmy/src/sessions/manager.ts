@@ -16,7 +16,7 @@ import {
   insertMessage,
   updateSession,
 } from "./registry.js";
-import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed } from "./callbacks.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
@@ -216,6 +216,9 @@ export class SessionManager {
         logger.info(`Session ${session.id} hit rate limit — will auto-retry in 60s`);
         if (mcpConfigPath) cleanupMcpConfigFile(session.id);
 
+        // Send hardcoded Discord notification — does not depend on LLM
+        notifyDiscordChannel(`⚠️ Rate limit hit. Session ${session.id}${session.employee ? ` (${session.employee})` : ''} has been paused and will auto-resume when the limit resets.`);
+
         updateSession(session.id, {
           status: "waiting",
           lastActivity: new Date().toISOString(),
@@ -280,6 +283,7 @@ export class SessionManager {
           });
           if (retryUpdated) {
             notifyRateLimitResumed(retryUpdated);
+            notifyDiscordChannel(`✅ Rate limit reset. Session ${session.id}${session.employee ? ` (${session.employee})` : ''} resuming.`);
             notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
           }
           logger.info(`Session ${session.id} resumed after rate limit reset`);
@@ -287,6 +291,7 @@ export class SessionManager {
         }
 
         // Exhausted retries
+        notifyDiscordChannel(`❌ Rate limit did not reset within 30 minutes. Session ${session.id}${session.employee ? ` (${session.employee})` : ''} has been stopped.`);
         await connector.replyMessage(target, "Usage limit didn't reset within 30 minutes. Please try again later.").catch(() => {});
         updateSession(session.id, {
           status: "error",
