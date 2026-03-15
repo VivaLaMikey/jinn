@@ -458,12 +458,22 @@ export async function handleApiRequest(
       const prompt = body.message || body.prompt;
       if (!prompt) return badRequest(res, "message is required");
 
+      // Allow internal callers (e.g. child session callbacks) to specify a non-user role
+      const messageRole: string = body.role === "notification" ? "notification" : "user";
+      const isNotification = messageRole === "notification";
+
       const config = context.getConfig();
       const engine = context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
-      // Persist the user message immediately
-      insertMessage(session.id, "user", prompt);
+      // Persist the message immediately
+      insertMessage(session.id, messageRole, prompt);
+
+      // Notifications are informational only — store and broadcast, but don't run the engine.
+      if (isNotification) {
+        context.emit("session:notification", { sessionId: session.id, message: prompt });
+        return json(res, { status: "delivered", sessionId: session.id });
+      }
 
       // If a turn is already running, check whether we should interrupt or queue.
       if (session.status === "running") {

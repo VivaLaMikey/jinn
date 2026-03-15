@@ -51,6 +51,6 @@ async function _sendNotification(
   await fetch(`http://127.0.0.1:${port}/api/sessions/${childSession.parentSessionId}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, role: "notification" }),
   });
 }

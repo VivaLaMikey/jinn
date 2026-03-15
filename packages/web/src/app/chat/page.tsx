@@ -201,6 +201,22 @@ function ChatPage() {
       }
     }
 
+    if (latest.event === 'session:notification') {
+      // Internal notification (e.g. child session completed) — display as a system notification
+      const notifMessage = String(payload.message || '')
+      if (notifMessage) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: 'notification' as const,
+            content: notifMessage,
+            timestamp: Date.now(),
+          },
+        ])
+      }
+    }
+
     if (latest.event === 'session:interrupted') {
       // Engine was interrupted — clear streaming, wait for new turn
       streamingTextRef.current = ''
@@ -277,7 +293,7 @@ function ChatPage() {
       const backendMessages: Message[] = Array.isArray(history)
         ? history.map((m: Record<string, unknown>) => ({
             id: crypto.randomUUID(),
-            role: (m.role as 'user' | 'assistant') || 'assistant',
+            role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
           }))
