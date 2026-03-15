@@ -15,9 +15,97 @@ import {
   type KanbanStore,
 } from '@/lib/kanban/store'
 import { PageLayout } from '@/components/page-layout'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
 import { KanbanBoard } from '@/components/kanban/kanban-board'
 import { CreateTicketModal } from '@/components/kanban/create-ticket-modal'
 import { TicketDetailPanel } from '@/components/kanban/ticket-detail-panel'
+
+/** Delete confirmation dialog */
+function DeleteConfirmDialog({
+  ticket,
+  onConfirm,
+  onCancel,
+}: {
+  ticket: KanbanTicket
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onCancel() }}>
+      <DialogContent
+        showCloseButton={false}
+        style={{
+          background: 'var(--bg)',
+          border: '1px solid var(--separator)',
+          borderRadius: 'var(--radius-lg)',
+          boxShadow: 'var(--shadow-card)',
+          maxWidth: 400,
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle
+            style={{
+              fontSize: 'var(--text-title3)',
+              fontWeight: 'var(--weight-bold)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            Delete Ticket
+          </DialogTitle>
+          <DialogDescription
+            style={{
+              fontSize: 'var(--text-footnote)',
+              color: 'var(--text-secondary)',
+              lineHeight: 1.5,
+            }}
+          >
+            Are you sure you want to delete &ldquo;{ticket.title}&rdquo;? This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <button
+            onClick={onCancel}
+            style={{
+              padding: 'var(--space-2) var(--space-4)',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--separator)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              fontSize: 'var(--text-footnote)',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            autoFocus
+            style={{
+              padding: 'var(--space-2) var(--space-4)',
+              borderRadius: 'var(--radius-md)',
+              border: 'none',
+              background: 'var(--system-red)',
+              color: '#fff',
+              fontSize: 'var(--text-footnote)',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Delete
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 export default function KanbanPage() {
   const [tickets, setTickets] = useState<KanbanStore>({})
@@ -28,6 +116,50 @@ export default function KanbanPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedTicket, setSelectedTicket] = useState<KanbanTicket | null>(null)
   const [filterEmployeeId, setFilterEmployeeId] = useState<string | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<KanbanTicket | null>(null)
+
+  /** Sync tickets to the gateway API, grouped by department */
+  const syncToApi = useCallback(async (store: KanbanStore) => {
+    // Group tickets by department
+    const byDept: Record<string, Array<{
+      id: string
+      title: string
+      description?: string
+      status: string
+      priority: string
+      assignee?: string
+      createdAt: string
+      updatedAt: string
+    }>> = {}
+
+    for (const ticket of Object.values(store)) {
+      const dept = ticket.department
+      if (!dept) continue
+      if (!byDept[dept]) byDept[dept] = []
+      byDept[dept].push({
+        id: ticket.id,
+        title: ticket.title,
+        description: ticket.description || undefined,
+        status: ticket.status,
+        priority: ticket.priority,
+        assignee: ticket.assigneeId || undefined,
+        createdAt: new Date(ticket.createdAt).toISOString(),
+        updatedAt: new Date(ticket.updatedAt).toISOString(),
+      })
+    }
+
+    // PUT each department's board (including empty arrays to clear deleted tickets)
+    const allDepts = new Set([...Object.keys(byDept), ...departments])
+    const promises = Array.from(allDepts).map(async (dept) => {
+      try {
+        await api.updateDepartmentBoard(dept, byDept[dept] || [])
+      } catch {
+        // API unavailable — localStorage is the fallback
+      }
+    })
+
+    await Promise.all(promises)
+  }, [departments])
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -96,6 +228,7 @@ export default function KanbanPage() {
                   status,
                   priority,
                   assigneeId: item.assignee || null,
+                  department: dept,
                   workState: 'idle',
                   createdAt: item.createdAt ? new Date(item.createdAt).getTime() : Date.now(),
                   updatedAt: item.updatedAt ? new Date(item.updatedAt).getTime() : Date.now(),
@@ -187,9 +320,9 @@ export default function KanbanPage() {
     priority: TicketPriority
     assigneeId: string | null
   }) {
-    // Derive the department from the assignee, falling back to the first known department
-    const assignee = employees.find((e) => e.name === data.assigneeId)
-    const departmentId = assignee?.department || departments[0] || null
+    // Infer department from assignee, fallback to first known department
+    const emp = data.assigneeId ? employees.find(e => e.name === data.assigneeId) : null
+    const departmentId = emp?.department || departments[0] || null
 
     setTickets((prev) => {
       const next = createTicket(prev, {
@@ -217,11 +350,18 @@ export default function KanbanPage() {
       return next
     })
     setSelectedTicket(null)
+    setDeleteConfirm(null)
   }
 
   function handleAssigneeChange(ticketId: string, assigneeId: string | null) {
+    // Update department when assignee changes
+    const emp = assigneeId ? employees.find(e => e.name === assigneeId) : null
+    const updates: Partial<Omit<KanbanTicket, 'id' | 'createdAt'>> = { assigneeId }
+    if (emp?.department) {
+      updates.department = emp.department
+    }
     setTickets((prev) => {
-      const next = updateTicket(prev, ticketId, { assigneeId })
+      const next = updateTicket(prev, ticketId, updates)
       persistToApi(next)
       return next
     })
@@ -433,6 +573,7 @@ export default function KanbanPage() {
                 onTicketClick={handleTicketClick}
                 onMoveTicket={handleMoveTicket}
                 onCreateTicket={() => setCreateOpen(true)}
+                onDeleteTicket={(ticket) => setDeleteConfirm(ticket)}
                 filterEmployeeId={filterEmployeeId}
               />
             )}
@@ -456,7 +597,16 @@ export default function KanbanPage() {
             onClose={() => setSelectedTicket(null)}
             onStatusChange={(status) => handleMoveTicket(selectedTicket.id, status)}
             onAssigneeChange={(name) => handleAssigneeChange(selectedTicket.id, name)}
-            onDelete={() => handleDeleteTicket(selectedTicket.id)}
+            onDelete={() => setDeleteConfirm(selectedTicket)}
+          />
+        )}
+
+        {/* Delete confirmation dialog */}
+        {deleteConfirm && (
+          <DeleteConfirmDialog
+            ticket={deleteConfirm}
+            onConfirm={() => handleDeleteTicket(deleteConfirm.id)}
+            onCancel={() => setDeleteConfirm(null)}
           />
         )}
 

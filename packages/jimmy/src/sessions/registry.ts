@@ -47,6 +47,17 @@ const CREATE_SESSION_KEY_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key ON sessions (session_key, last_activity)
 `;
 
+const CREATE_FILES_TABLE = `
+CREATE TABLE IF NOT EXISTS files (
+  id TEXT PRIMARY KEY,
+  filename TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  mimetype TEXT,
+  path TEXT,
+  created_at TEXT NOT NULL
+)
+`;
+
 function parseJsonObject(value: unknown): JsonObject | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   try {
@@ -112,6 +123,7 @@ export function initDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_queue_session
       ON queue_items (session_key, status, position);
   `);
+  db.exec(CREATE_FILES_TABLE);
 
   return db;
 }
@@ -343,16 +355,29 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
 }
 
 /**
- * Mark any sessions stuck in "running" status as "error".
+ * Mark any sessions stuck in "running" status as "interrupted".
  * Called on gateway startup — if the gateway is starting, no sessions can actually be running.
+ * Sessions with an engine_session_id can be resumed via the Claude --resume flag.
  */
 export function recoverStaleSessions(): number {
   const db = initDb();
   const now = new Date().toISOString();
   const result = db.prepare(
-    "UPDATE sessions SET status = 'error', last_activity = ?, last_error = 'Interrupted: gateway restarted while session was running' WHERE status = 'running'",
+    "UPDATE sessions SET status = 'interrupted', last_activity = ?, last_error = 'Interrupted: gateway restarted while session was running' WHERE status = 'running'",
   ).run(now);
   return result.changes;
+}
+
+/**
+ * Get sessions that were interrupted by a gateway restart and can be resumed.
+ * A session is resumable if it has an engine_session_id (Claude's internal session ID).
+ */
+export function getInterruptedSessions(): Session[] {
+  const db = initDb();
+  const rows = db.prepare(
+    "SELECT * FROM sessions WHERE status = 'interrupted' AND engine_session_id IS NOT NULL ORDER BY last_activity DESC",
+  ).all() as Record<string, unknown>[];
+  return rows.map(rowToSession);
 }
 
 /**
@@ -467,4 +492,53 @@ export function recoverStaleQueueItems(): number {
     "UPDATE queue_items SET status = 'cancelled' WHERE status IN ('pending', 'running')"
   ).run();
   return result.changes;
+}
+
+// ── File management ──────────────────────────────────────────────────
+
+export interface FileMeta {
+  id: string;
+  filename: string;
+  size: number;
+  mimetype: string | null;
+  path: string | null;
+  createdAt: string;
+}
+
+function rowToFileMeta(row: Record<string, unknown>): FileMeta {
+  return {
+    id: row.id as string,
+    filename: row.filename as string,
+    size: row.size as number,
+    mimetype: (row.mimetype as string) ?? null,
+    path: (row.path as string) ?? null,
+    createdAt: row.created_at as string,
+  };
+}
+
+export function insertFile(meta: { id: string; filename: string; size: number; mimetype: string | null; path: string | null }): FileMeta {
+  const db = initDb();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO files (id, filename, size, mimetype, path, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    meta.id, meta.filename, meta.size, meta.mimetype, meta.path, now,
+  );
+  return { ...meta, createdAt: now };
+}
+
+export function getFile(id: string): FileMeta | undefined {
+  const db = initDb();
+  const row = db.prepare('SELECT * FROM files WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  return row ? rowToFileMeta(row) : undefined;
+}
+
+export function listFiles(): FileMeta[] {
+  const db = initDb();
+  const rows = db.prepare('SELECT * FROM files ORDER BY created_at DESC').all() as Record<string, unknown>[];
+  return rows.map(rowToFileMeta);
+}
+
+export function deleteFile(id: string): boolean {
+  const db = initDb();
+  const result = db.prepare('DELETE FROM files WHERE id = ?').run(id);
+  return result.changes > 0;
 }

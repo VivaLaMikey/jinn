@@ -1,6 +1,6 @@
 {
   "name": "jinn-cli",
-  "version": "0.3.1",
+  "version": "0.5.3",
   "description": "Lightweight AI gateway daemon orchestrating Claude Code and Codex",
   "license": "MIT",
   "type": "module",
@@ -24,9 +24,11 @@
     "@slack/bolt": "^4.3.0",
     "@whiskeysockets/baileys": "7.0.0-rc.9",
     "better-sqlite3": "^11.8.0",
+    "busboy": "^1.6.0",
     "chokidar": "^4.0.0",
     "classic-level": "^2.0.0",
     "commander": "^13.1.0",
+    "discord.js": "^14.25.1",
     "js-yaml": "^4.1.0",
     "node-cron": "^3.0.0",
     "qrcode": "^1.5.4",
@@ -36,6 +38,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
+    "@types/busboy": "^1.5.4",
     "@types/js-yaml": "^4.0.0",
     "@types/node": "^22.0.0",
     "@types/node-cron": "^3.0.0",

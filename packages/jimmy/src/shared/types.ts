@@ -134,12 +134,12 @@ export interface Session {
   model: string | null;
   title: string | null;
   parentSessionId: string | null;
-  status: "idle" | "running" | "error";
+  status: "idle" | "running" | "error" | "interrupted";
   effortLevel: string | null;
   totalCost: number;
   totalTurns: number;
   queueDepth?: number;
-  transportState?: "idle" | "queued" | "running" | "error";
+  transportState?: "idle" | "queued" | "running" | "error" | "interrupted";
   createdAt: string;
   lastActivity: string;
   lastError: string | null;
@@ -189,7 +189,8 @@ export interface Department {
   description: string;
 }
 
-export interface McpServerConfig {
+/** Stdio-based MCP server (spawned as child process) */
+export interface McpServerStdioConfig {
   /** Shell command to start the MCP server */
   command: string;
   /** Arguments to pass to the command */
@@ -197,6 +198,19 @@ export interface McpServerConfig {
   /** Environment variables for the MCP server process */
   env?: Record<string, string>;
 }
+
+/** HTTP/SSE-based MCP server (remote URL) */
+export interface McpServerUrlConfig {
+  /** Transport type — Claude Code requires "sse" for URL-based servers */
+  type?: "sse";
+  /** URL of the MCP server (HTTP streamable or SSE transport) */
+  url: string;
+  /** Optional headers for authentication */
+  headers?: Record<string, string>;
+}
+
+/** MCP server config — either stdio (command) or URL-based */
+export type McpServerConfig = McpServerStdioConfig | McpServerUrlConfig;
 
 export interface McpGlobalConfig {
   browser?: {
@@ -215,7 +229,7 @@ export interface McpGlobalConfig {
     enabled: boolean;
   };
   /** Custom MCP servers defined by the user */
-  custom?: Record<string, McpServerConfig & { enabled?: boolean }>;
+  custom?: Record<string, (McpServerStdioConfig | McpServerUrlConfig) & { enabled?: boolean }>;
 }
 
 export interface WebConnectorConfig {}
@@ -267,6 +281,7 @@ export interface JinnConfig {
   sessions?: {
     maxDurationMinutes?: number;
     maxCostUsd?: number;
+    interruptOnNewMessage?: boolean;
   };
   cron?: {
     defaultDelivery?: CronDelivery;
@@ -274,6 +289,10 @@ export interface JinnConfig {
     alertConnector?: string;
   };
   portal?: PortalConfig;
+  context?: {
+    /** Max characters for the built system prompt. Defaults to 100000. */
+    maxChars?: number;
+  };
   stt?: {
     enabled?: boolean;
     model?: string;
@@ -281,4 +300,5 @@ export interface JinnConfig {
     language?: string;
     languages?: string[];
   };
+  remotes?: Record<string, { url: string; label?: string }>;
 }
