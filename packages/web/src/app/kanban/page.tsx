@@ -328,6 +328,7 @@ export default function KanbanPage() {
       const next = createTicket(prev, {
         ...data,
         status: 'backlog',
+        department: departmentId,
         departmentId,
       })
       persistToApi(next)

@@ -394,7 +394,7 @@ function ChatPage() {
   const handleInterrupt = useCallback(async () => {
     if (!selectedId) return
     try {
-      await api.sendMessage(selectedId, { message: '', interrupt: true })
+      await api.stopSession(selectedId)
     } catch {
       // ignore — session may already be done
     }
