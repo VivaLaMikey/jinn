@@ -20,6 +20,39 @@ export function notifyParentSession(
   });
 }
 
+/**
+ * Notify the parent session that a child session has been rate-limited and will auto-resume.
+ * Fire-and-forget — errors are logged but never rethrown.
+ */
+export function notifyRateLimited(
+  childSession: Session,
+  estimatedResumeTime?: string, // ISO timestamp or human-readable
+): void {
+  if (!childSession.parentSessionId) return;
+
+  _sendNotification(childSession, {
+    error: null,
+    result: `⏳ Session is rate-limited and will auto-resume${estimatedResumeTime ? ` around ${estimatedResumeTime}` : ' when the limit resets'}. No action needed.`,
+  }).catch((err) => {
+    logger.warn(`[callbacks] Failed to send rate-limit notification: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+/**
+ * Notify the parent session that a rate-limited child session has successfully resumed.
+ * Fire-and-forget — errors are logged but never rethrown.
+ */
+export function notifyRateLimitResumed(
+  childSession: Session,
+): void {
+  if (!childSession.parentSessionId) return;
+
+  const employeeName = childSession.employee || "Unknown";
+  _sendRaw(childSession.parentSessionId, `🔄 Employee "${employeeName}" (session ${childSession.id}) has resumed after rate limit cleared.`).catch((err) => {
+    logger.warn(`[callbacks] Failed to send resume notification: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
 async function _sendNotification(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
@@ -40,6 +73,10 @@ async function _sendNotification(
     message = `✅ Employee "${employeeName}" (session ${childId}) has completed their task.\n\nResult preview:\n${preview}`;
   }
 
+  await _sendRaw(childSession.parentSessionId!, message);
+}
+
+async function _sendRaw(parentSessionId: string, message: string): Promise<void> {
   let port = 7777;
   try {
     const config = loadConfig();
@@ -48,7 +85,7 @@ async function _sendNotification(
     // Use default port if config is unavailable
   }
 
-  await fetch(`http://127.0.0.1:${port}/api/sessions/${childSession.parentSessionId}/message`, {
+  await fetch(`http://127.0.0.1:${port}/api/sessions/${parentSessionId}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, role: "notification" }),

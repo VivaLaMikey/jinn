@@ -16,7 +16,7 @@ import {
   insertMessage,
   updateSession,
 } from "./registry.js";
-import { notifyParentSession } from "./callbacks.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
@@ -222,6 +222,8 @@ export class SessionManager {
           lastError: "Rate limited — waiting for usage reset",
         });
 
+        notifyRateLimited(session);
+
         await connector.replyMessage(target, "⏳ Usage limit reached. Waiting for reset — I'll continue automatically.").catch(() => {});
 
         // Poll every 60s, retry up to 30 times (30 min)
@@ -277,6 +279,7 @@ export class SessionManager {
             lastError: retryResult.error ?? null,
           });
           if (retryUpdated) {
+            notifyRateLimitResumed(retryUpdated);
             notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
           }
           logger.info(`Session ${session.id} resumed after rate limit reset`);

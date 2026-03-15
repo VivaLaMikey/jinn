@@ -40,7 +40,7 @@ import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
-import { notifyParentSession } from "../sessions/callbacks.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed } from "../sessions/callbacks.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -1437,6 +1437,124 @@ async function runWebSession(
 
     if (!getSession(currentSession.id)) {
       logger.info(`Skipping completion for deleted web session ${currentSession.id}`);
+      return;
+    }
+
+    // Detect rate limit / usage limit errors and auto-retry
+    const isRateLimited = result.error &&
+      /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(result.error);
+
+    if (isRateLimited) {
+      logger.info(`Web session ${currentSession.id} hit rate limit — will auto-retry in 60s`);
+
+      updateSession(currentSession.id, {
+        status: "waiting",
+        lastActivity: new Date().toISOString(),
+        lastError: "Rate limited — waiting for usage reset",
+      });
+
+      // Notify parent session about rate limit (fire-and-forget)
+      const now = new Date();
+      const estimatedResume = new Date(now.getTime() + 60_000);
+      notifyRateLimited(
+        { ...currentSession, status: "waiting" } as Session,
+        estimatedResume.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+      );
+
+      context.emit("session:rate-limited", {
+        sessionId: currentSession.id,
+        employee: currentSession.employee,
+        error: result.error,
+      });
+
+      // Poll every 60s, retry up to 30 times (30 min)
+      const MAX_RATE_LIMIT_RETRIES = 30;
+      for (let retryAttempt = 0; retryAttempt < MAX_RATE_LIMIT_RETRIES; retryAttempt++) {
+        await new Promise<void>((r) => setTimeout(r, 60_000));
+
+        // Check session still exists and hasn't been cancelled
+        const current = getSession(currentSession.id);
+        if (!current || current.status === "error") {
+          logger.info(`Web session ${currentSession.id} stopped while waiting for rate limit reset`);
+          return;
+        }
+
+        logger.info(`Web session ${currentSession.id} retrying after rate limit (attempt ${retryAttempt + 1}/${MAX_RATE_LIMIT_RETRIES})`);
+
+        const retryResult = await engine.run({
+          prompt,
+          resumeSessionId: currentSession.engineSessionId ?? undefined,
+          systemPrompt,
+          cwd: JINN_HOME,
+          bin: engineConfig.bin,
+          model: currentSession.model ?? engineConfig.model,
+          effortLevel,
+          cliFlags: employee?.cliFlags,
+          sessionId: currentSession.id,
+          onStream: (delta) => {
+            context.emit("session:delta", {
+              sessionId: currentSession.id,
+              type: delta.type,
+              content: delta.content,
+              toolName: delta.toolName,
+            });
+          },
+        });
+
+        const stillLimited = retryResult.error &&
+          /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(retryResult.error);
+
+        if (stillLimited) {
+          logger.info(`Web session ${currentSession.id} still rate limited (attempt ${retryAttempt + 1})`);
+          continue;
+        }
+
+        // Rate limit cleared — handle result
+        if (retryResult.result) {
+          insertMessage(currentSession.id, "assistant", retryResult.result);
+        }
+
+        const completedAfterRetry = updateSession(currentSession.id, {
+          engineSessionId: retryResult.sessionId,
+          status: retryResult.error ? "error" : "idle",
+          lastActivity: new Date().toISOString(),
+          lastError: retryResult.error ?? null,
+        });
+
+        if (completedAfterRetry) {
+          notifyRateLimitResumed(completedAfterRetry);
+          notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+        }
+
+        context.emit("session:completed", {
+          sessionId: currentSession.id,
+          employee: currentSession.employee || config.portal?.portalName || "Jinn",
+          title: currentSession.title,
+          result: retryResult.result,
+          error: retryResult.error || null,
+          cost: retryResult.cost,
+          durationMs: retryResult.durationMs,
+        });
+
+        logger.info(`Web session ${currentSession.id} resumed after rate limit reset`);
+        return;
+      }
+
+      // Exhausted retries
+      const erroredSession = updateSession(currentSession.id, {
+        status: "error",
+        lastActivity: new Date().toISOString(),
+        lastError: "Rate limit did not reset within 30 minutes",
+      });
+      if (erroredSession) {
+        notifyParentSession(erroredSession, { error: "Rate limit did not reset within 30 minutes" });
+      }
+      context.emit("session:completed", {
+        sessionId: currentSession.id,
+        result: null,
+        error: "Rate limit did not reset within 30 minutes",
+      });
+      logger.warn(`Web session ${currentSession.id} exhausted rate limit retries`);
       return;
     }
 
