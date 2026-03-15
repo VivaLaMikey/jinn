@@ -469,10 +469,9 @@ export async function handleApiRequest(
       // Persist the message immediately
       insertMessage(session.id, messageRole, prompt);
 
-      // Notifications are informational only — store and broadcast, but don't run the engine.
+      // Emit notification event for UI display (renders as system banner, not user bubble)
       if (isNotification) {
         context.emit("session:notification", { sessionId: session.id, message: prompt });
-        return json(res, { status: "delivered", sessionId: session.id });
       }
 
       // If a turn is already running, check whether we should interrupt or queue.
