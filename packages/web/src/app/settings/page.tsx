@@ -56,6 +56,7 @@ interface Config {
       botToken?: string
       allowFrom?: string | string[]
       guildId?: string
+      channelId?: string
     }
     whatsapp?: {
       authDir?: string
@@ -1423,6 +1424,15 @@ export default function SettingsPage() {
                       updateConfig(["connectors", "discord", "guildId"], v.trim() || undefined)
                     }
                     placeholder="Server/Guild ID (optional)"
+                  />
+                </FieldRow>
+                <FieldRow label="Channel ID">
+                  <SettingsInput
+                    value={config.connectors?.discord?.channelId ?? ""}
+                    onChange={(v) =>
+                      updateConfig(["connectors", "discord", "channelId"], v.trim() || undefined)
+                    }
+                    placeholder="Restrict to this channel (right-click → Copy Channel ID)"
                   />
                 </FieldRow>
 

@@ -683,41 +683,28 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
         </div>
       )}
 
-      {/* Loading indicator while waiting for engine response */}
-      {loading && !streamingText && messages.length > 0 && (messages[messages.length - 1]?.role === 'user' || messages[messages.length - 1]?.toolCall) && (
+      {/* Thinking indicator — visible while waiting, disappears when streaming or response arrives */}
+      {loading && !streamingText && messages.length > 0 && (
         <div style={{
           display: 'flex',
-          justifyContent: 'flex-start',
-          padding: '0 var(--space-4)',
-          marginTop: 'var(--space-2)',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px var(--space-4)',
+          marginTop: 'var(--space-1)',
         }}>
-          <div style={{
-            padding: 'var(--space-3) var(--space-4)',
-            borderRadius: 'var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg)',
-            background: 'var(--material-thin)',
-            border: '1px solid var(--separator)',
+          <span style={{
+            width: 6, height: 6, borderRadius: '50%',
+            background: 'var(--accent)',
+            animation: 'jinn-pulse 1.4s infinite',
+            flexShrink: 0,
+          }} />
+          <span style={{
+            fontSize: 'var(--text-caption1)',
+            color: 'var(--text-tertiary)',
+            fontWeight: 'var(--weight-medium)',
           }}>
-            <div style={{ display: 'flex', gap: 4, alignItems: 'center', height: 16 }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: 'var(--text-quaternary)',
-                animation: 'jinn-pulse 1.4s infinite',
-                animationDelay: '0ms',
-              }} />
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: 'var(--text-quaternary)',
-                animation: 'jinn-pulse 1.4s infinite',
-                animationDelay: '200ms',
-              }} />
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: 'var(--text-quaternary)',
-                animation: 'jinn-pulse 1.4s infinite',
-                animationDelay: '400ms',
-              }} />
-            </div>
-          </div>
+            Thinking
+          </span>
         </div>
       )}
 

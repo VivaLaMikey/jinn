@@ -40,6 +40,7 @@ import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
+import { notifyParentSession } from "../sessions/callbacks.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -355,6 +356,16 @@ export async function handleApiRequest(
     if (method === "GET" && params) {
       const children = listSessions().filter((s) => s.parentSessionId === params!.id);
       return json(res, children.map((child) => serializeSession(child, context)));
+    }
+
+    // GET /api/sessions/:id/transcript — return raw Claude Code session transcript
+    params = matchRoute("/api/sessions/:id/transcript", pathname);
+    if (method === "GET" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      if (!session.engineSessionId) return json(res, []);
+      const entries = loadRawTranscript(session.engineSessionId);
+      return json(res, entries);
     }
 
     // POST /api/sessions/stub — create a session with a pre-populated assistant
@@ -1192,6 +1203,94 @@ function parseSkillsSearchOutput(
  * Load messages from a Claude Code JSONL transcript file.
  * Used as a fallback when the messages DB is empty (pre-existing sessions).
  */
+interface TranscriptContentBlock {
+  type: "text" | "tool_use" | "tool_result" | "thinking";
+  text?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  content?: unknown;
+  id?: string;
+}
+
+interface TranscriptEntry {
+  role: "user" | "assistant" | "system";
+  content: TranscriptContentBlock[];
+}
+
+function loadRawTranscript(engineSessionId: string): TranscriptEntry[] {
+  const claudeProjectsDir = path.join(
+    process.env.HOME || process.env.USERPROFILE || "",
+    ".claude",
+    "projects",
+  );
+  if (!fs.existsSync(claudeProjectsDir)) return [];
+
+  const projectDirs = fs.readdirSync(claudeProjectsDir, { withFileTypes: true });
+  for (const dir of projectDirs) {
+    if (!dir.isDirectory()) continue;
+    const jsonlPath = path.join(claudeProjectsDir, dir.name, `${engineSessionId}.jsonl`);
+    if (!fs.existsSync(jsonlPath)) continue;
+
+    const entries: TranscriptEntry[] = [];
+    const lines = fs.readFileSync(jsonlPath, "utf-8").trim().split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        const type = obj.type;
+        if (type !== "user" && type !== "assistant") continue;
+        const msg = obj.message;
+        if (!msg) continue;
+
+        const rawContent = msg.content;
+        const blocks: TranscriptContentBlock[] = [];
+
+        if (typeof rawContent === "string") {
+          if (rawContent.trim()) blocks.push({ type: "text", text: rawContent });
+        } else if (Array.isArray(rawContent)) {
+          for (const block of rawContent) {
+            if (!block || typeof block !== "object") continue;
+            const b = block as Record<string, unknown>;
+            const blockType = String(b.type || "");
+            if (blockType === "text") {
+              blocks.push({ type: "text", text: String(b.text || "") });
+            } else if (blockType === "tool_use") {
+              blocks.push({
+                type: "tool_use",
+                name: String(b.name || ""),
+                input: (b.input as Record<string, unknown>) || {},
+              });
+            } else if (blockType === "tool_result") {
+              const resultContent = b.content;
+              let resultText: string;
+              if (typeof resultContent === "string") {
+                resultText = resultContent;
+              } else if (Array.isArray(resultContent)) {
+                resultText = (resultContent as Record<string, unknown>[])
+                  .filter((rc) => rc.type === "text")
+                  .map((rc) => String(rc.text || ""))
+                  .join("");
+              } else {
+                resultText = "";
+              }
+              blocks.push({ type: "tool_result", text: resultText });
+            } else if (blockType === "thinking") {
+              blocks.push({ type: "thinking", text: String(b.thinking || b.text || "") });
+            }
+          }
+        }
+
+        if (blocks.length > 0) {
+          entries.push({ role: type as "user" | "assistant", content: blocks });
+        }
+      } catch {
+        continue;
+      }
+    }
+    return entries;
+  }
+  return [];
+}
+
 function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; content: string }> {
   // Claude Code stores transcripts in ~/.claude/projects/<project-key>/<sessionId>.jsonl
   const claudeProjectsDir = path.join(
@@ -1337,12 +1436,15 @@ async function runWebSession(
       insertMessage(currentSession.id, "assistant", result.result);
     }
 
-    updateSession(currentSession.id, {
+    const completedSession = updateSession(currentSession.id, {
       engineSessionId: result.sessionId,
       status: result.error ? "error" : "idle",
       lastActivity: new Date().toISOString(),
       lastError: result.error ?? null,
     });
+    if (completedSession) {
+      notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs });
+    }
 
     context.emit("session:completed", {
       sessionId: currentSession.id,
@@ -1365,11 +1467,14 @@ async function runWebSession(
       logger.info(`Skipping error handling for deleted web session ${currentSession.id}: ${errMsg}`);
       return;
     }
-    updateSession(currentSession.id, {
+    const erroredSession = updateSession(currentSession.id, {
       status: "error",
       lastActivity: new Date().toISOString(),
       lastError: errMsg,
     });
+    if (erroredSession) {
+      notifyParentSession(erroredSession, { error: errMsg });
+    }
     context.emit("session:completed", {
       sessionId: currentSession.id,
       result: null,

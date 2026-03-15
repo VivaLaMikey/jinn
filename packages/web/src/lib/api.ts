@@ -1,3 +1,15 @@
+export interface TranscriptContentBlock {
+  type: 'text' | 'tool_use' | 'tool_result' | 'thinking'
+  text?: string
+  name?: string
+  input?: Record<string, unknown>
+}
+
+export interface TranscriptEntry {
+  role: 'user' | 'assistant' | 'system'
+  content: TranscriptContentBlock[]
+}
+
 export interface QueueItem {
   id: string;
   sessionId: string;
@@ -150,4 +162,6 @@ export const api = {
     post<{ status: string }>(`/api/sessions/${sessionId}/queue/pause`, {}),
   resumeSessionQueue: (sessionId: string) =>
     post<{ status: string }>(`/api/sessions/${sessionId}/queue/resume`, {}),
+  getSessionTranscript: (id: string) =>
+    get<TranscriptEntry[]>(`/api/sessions/${id}/transcript`),
 };

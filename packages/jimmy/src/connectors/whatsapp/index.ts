@@ -1,10 +1,15 @@
-import makeWASocket, {
+import makeWASocketImport, {
+  Browsers,
   DisconnectReason,
+  fetchLatestWaWebVersion,
   useMultiFileAuthState,
   downloadMediaMessage,
   type WASocket,
   type WAMessage,
 } from "@whiskeysockets/baileys";
+// Handle ESM/CJS interop — Baileys may export as .default in some environments
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const makeWASocket = ((makeWASocketImport as any).default ?? makeWASocketImport) as typeof makeWASocketImport;
 import type {
   Connector,
   ConnectorCapabilities,
@@ -48,6 +53,9 @@ export class WhatsAppConnector implements Connector {
   private lastError: string | null = null;
   private authDir: string;
   private latestQr: string | null = null;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
   private readonly capabilities: ConnectorCapabilities = {
     threading: false,
@@ -71,13 +79,27 @@ export class WhatsAppConnector implements Connector {
     await this.connect();
   }
 
+  private scheduleReconnect(): void {
+    if (this.connectionStatus === "stopped") return;
+    // Exponential backoff: 5s, 10s, 20s, 40s, 60s max
+    const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts), 60000);
+    this.reconnectAttempts++;
+    logger.info(`WhatsApp reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts})`);
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
   private async connect(): Promise<void> {
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
 
+    // Fetch latest WA Web version to avoid 405 rejections from outdated version
+    const { version } = await fetchLatestWaWebVersion().catch(() => ({ version: undefined }));
+
     this.sock = makeWASocket({
       auth: state,
-      printQRInTerminal: true,
+      printQRInTerminal: false,
       logger: silentLogger as never,
+      browser: Browsers.macOS("Chrome"),
+      ...(version ? { version } : {}),
     });
 
     this.sock.ev.on("creds.update", saveCreds);
@@ -92,14 +114,15 @@ export class WhatsAppConnector implements Connector {
         this.latestQr = null;
         this.connectionStatus = "running";
         this.lastError = null;
+        this.reconnectAttempts = 0;
         logger.info("WhatsApp connector connected");
       }
       if (connection === "close") {
         const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        logger.info(`WhatsApp connection closed (${statusCode}), reconnecting: ${shouldReconnect}`);
-        if (shouldReconnect && this.connectionStatus !== "stopped") {
-          setTimeout(() => this.connect(), 5000);
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+        logger.info(`WhatsApp connection closed (${statusCode}), reconnecting: ${!isLoggedOut}`);
+        if (!isLoggedOut && this.connectionStatus !== "stopped") {
+          this.scheduleReconnect();
         } else {
           this.connectionStatus = "stopped";
         }
@@ -120,6 +143,10 @@ export class WhatsAppConnector implements Connector {
 
   async stop(): Promise<void> {
     this.connectionStatus = "stopped";
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     await this.sock?.end(undefined);
     logger.info("WhatsApp connector stopped");
   }
@@ -133,10 +160,13 @@ export class WhatsAppConnector implements Connector {
   }
 
   getHealth(): ConnectorHealth {
+    let status: ConnectorHealth["status"] = "stopped";
+    if (this.connectionStatus === "running") status = "running";
+    else if (this.connectionStatus === "qr_pending") status = "qr_pending";
     return {
-      status: this.connectionStatus === "running" ? "running" : "stopped",
+      status,
       detail: this.connectionStatus === "qr_pending"
-        ? "Scan QR code in Jinn logs to connect"
+        ? "Scan QR code in settings to connect"
         : (this.lastError ?? undefined),
       capabilities: this.capabilities,
     };
@@ -180,29 +210,58 @@ export class WhatsAppConnector implements Connector {
     // No-op
   }
 
-  private async handleMessage(message: WAMessage): Promise<void> {
-    // Skip messages from self
-    if (message.key.fromMe) return;
+  async setTypingStatus(channelId: string, _threadTs: string | undefined, status: string): Promise<void> {
+    if (!this.sock || this.connectionStatus !== "running") return;
+    const existing = this.typingIntervals.get(channelId);
+    if (existing) {
+      clearInterval(existing);
+      this.typingIntervals.delete(channelId);
+    }
+    if (status) {
+      // Show "typing..." and refresh every 20s (WhatsApp composing expires ~25s)
+      await this.sock.sendPresenceUpdate("composing", channelId).catch(() => {});
+      const interval = setInterval(() => {
+        this.sock?.sendPresenceUpdate("composing", channelId).catch(() => {});
+      }, 20_000);
+      this.typingIntervals.set(channelId, interval);
+    } else {
+      await this.sock.sendPresenceUpdate("paused", channelId).catch(() => {});
+    }
+  }
 
-    // Skip old messages on boot
+  private async handleMessage(message: WAMessage): Promise<void> {
+    const jid = message.key.remoteJid;
+    const ownJid = this.sock?.user?.id ?? "";
+    const ownJidBare = ownJid.split(":")[0] + "@s.whatsapp.net";
+    // WhatsApp now uses LID (Linked ID) format — extract from sock.user.lid
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ownLid = (this.sock?.user as any)?.lid ?? "";
+    const ownLidBare = ownLid ? ownLid.split(":")[0] + "@lid" : "";
+
+    if (!jid) return;
+    if (jid.endsWith("@g.us")) return;
+    if (jid.endsWith("@newsletter")) return;
+    if (jid.endsWith("@broadcast")) return;
+
+    // Allow "note to self" — matches own phone JID or own LID
+    const isSelfChat = message.key.fromMe && (
+      jid === ownJidBare || jid === ownJid ||
+      jid === ownLidBare || jid === ownLid
+    );
+
+    if (message.key.fromMe && !isSelfChat) return;
+
     const msgTimestampMs = Number(message.messageTimestamp ?? 0) * 1000;
     if (
       this.config.ignoreOldMessagesOnBoot !== false &&
       msgTimestampMs < this.bootTimeMs
     ) return;
 
-    const jid = message.key.remoteJid;
-    if (!jid) return;
-
-    // Skip group messages — only handle 1:1 DMs
-    if (jid.endsWith("@g.us")) return;
-
-    // Allowlist check
-    if (this.allowedJids.size > 0 && !this.allowedJids.has(jid)) return;
-
+    // If no allowFrom configured, only self-chat is allowed.
+    // If allowFrom is set, also allow those specific JIDs.
+    if (!isSelfChat && (this.allowedJids.size === 0 || !this.allowedJids.has(jid))) return;
     if (!this.handler) return;
 
-    // Extract text content
     const text =
       message.message?.conversation ||
       message.message?.extendedTextMessage?.text ||
@@ -211,6 +270,7 @@ export class WhatsAppConnector implements Connector {
       "";
 
     if (!text.trim()) return;
+    logger.info(`WhatsApp message received from ${jid}`);
 
     // Download media attachment if present
     const attachments: Array<{ name: string; localPath: string; mimeType: string; url: string }> = [];

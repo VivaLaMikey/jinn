@@ -24,6 +24,8 @@ export interface DiscordConnectorConfig {
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
   guildId?: string;
+  /** Only respond to messages in this channel (right-click channel → Copy Channel ID) */
+  channelId?: string;
 }
 
 export class DiscordConnector implements Connector {
@@ -35,6 +37,7 @@ export class DiscordConnector implements Connector {
   private allowedUserIds: Set<string>;
   private status: "starting" | "running" | "stopped" | "error" = "starting";
   private lastError: string | null = null;
+  private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(config: DiscordConnectorConfig) {
     this.config = config;
@@ -184,11 +187,24 @@ export class DiscordConnector implements Connector {
     }
   }
 
-  async setTypingStatus(channelId: string): Promise<void> {
+  async setTypingStatus(channelId: string, _threadTs: string | undefined, status: string): Promise<void> {
+    const existing = this.typingIntervals.get(channelId);
+    if (existing) {
+      clearInterval(existing);
+      this.typingIntervals.delete(channelId);
+    }
+    if (!status) return;
     try {
       const channel = await this.client.channels.fetch(channelId);
       if (channel && channel.isTextBased()) {
         await (channel as TextChannel).sendTyping();
+        // Discord typing expires after 10s — refresh every 8s
+        const interval = setInterval(async () => {
+          try {
+            await (channel as TextChannel).sendTyping();
+          } catch { /* non-fatal */ }
+        }, 8_000);
+        this.typingIntervals.set(channelId, interval);
       }
     } catch {
       // non-fatal
@@ -207,6 +223,9 @@ export class DiscordConnector implements Connector {
 
     // Guild restriction
     if (this.config.guildId && message.guild?.id !== this.config.guildId) return;
+
+    // Channel restriction — only respond in a specific channel (+ DMs always allowed)
+    if (this.config.channelId && message.channel.id !== this.config.channelId && !message.channel.isDMBased()) return;
 
     // User allowlist
     if (this.allowedUserIds.size > 0 && !this.allowedUserIds.has(message.author.id)) return;

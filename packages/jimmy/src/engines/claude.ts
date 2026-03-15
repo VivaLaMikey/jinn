@@ -236,10 +236,38 @@ export class ClaudeEngine implements InterruptibleEngine {
             } else {
               result = parsed;
             }
-            logger.info(`Claude result: session_id=${result.session_id || "none"}, result_length=${((result.result as string) || "").length}, cost=$${result.total_cost_usd || 0}`);
+            let finalText = (result.result as string) || "";
+
+            // If result text is empty, extract last assistant text from conversation
+            if (!finalText.trim() && Array.isArray(parsed)) {
+              for (let i = parsed.length - 1; i >= 0; i--) {
+                const evt = parsed[i] as Record<string, unknown>;
+                if (evt.type === "assistant" && Array.isArray(evt.content)) {
+                  const textBlocks = (evt.content as Array<Record<string, unknown>>)
+                    .filter((b) => b.type === "text" && typeof b.text === "string")
+                    .map((b) => b.text as string);
+                  if (textBlocks.length > 0) {
+                    finalText = textBlocks.join("\n");
+                    break;
+                  }
+                }
+                // Also check for message format with role field
+                if (evt.role === "assistant" && Array.isArray(evt.content)) {
+                  const textBlocks = (evt.content as Array<Record<string, unknown>>)
+                    .filter((b) => b.type === "text" && typeof b.text === "string")
+                    .map((b) => b.text as string);
+                  if (textBlocks.length > 0) {
+                    finalText = textBlocks.join("\n");
+                    break;
+                  }
+                }
+              }
+            }
+
+            logger.info(`Claude result: session_id=${result.session_id || "none"}, result_length=${finalText.length}, cost=$${result.total_cost_usd || 0}`);
             resolve({
               sessionId: result.session_id as string,
-              result: result.result as string,
+              result: finalText,
               cost: result.total_cost_usd as number,
               durationMs: result.duration_ms as number,
               numTurns: result.num_turns as number,

@@ -8,6 +8,7 @@ import { ChatSidebar } from '@/components/chat/chat-sidebar'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import { QueuePanel } from '@/components/chat/queue-panel'
+import { CliTranscript } from '@/components/chat/cli-transcript'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
 import { useSettings } from '@/app/settings-provider'
@@ -53,6 +54,7 @@ function ChatPage() {
   // When true, user explicitly started a new chat — don't auto-select first session
   const newChatIntentRef = useRef(false)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
+  const [viewMode, setViewMode] = useState<'chat' | 'cli'>('chat')
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -348,6 +350,7 @@ function ChatPage() {
       setMessages([])
       setLoading(false)
       setMobileView('chat')
+      setViewMode('chat')
       loadSession(id)
     },
     [loadSession]
@@ -451,17 +454,6 @@ function ChatPage() {
     } catch { /* ignore */ }
     setConfirmDelete(false)
     setShowMoreMenu(false)
-  }, [selectedId])
-
-  const handleInterrupt = useCallback(async () => {
-    if (!selectedId) return
-    try {
-      await api.stopSession(selectedId)
-    } catch {
-      // best effort
-    }
-    setLoading(false)
-    setStreamingText('')
   }, [selectedId])
 
   const handleStatusRequest = useCallback(async () => {
@@ -616,6 +608,54 @@ function ChatPage() {
               </div>
             </div>
 
+            {/* View mode toggle — only shown when a session is selected */}
+            {selectedId && (
+              <div style={{
+                display: 'flex',
+                gap: 2,
+                padding: 2,
+                background: 'var(--fill-tertiary)',
+                borderRadius: 'var(--radius-sm)',
+                marginRight: 'var(--space-2)',
+              }}>
+                <button
+                  onClick={() => setViewMode('chat')}
+                  style={{
+                    padding: '3px 10px',
+                    borderRadius: 'calc(var(--radius-sm) - 2px)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 'var(--text-caption1)',
+                    fontWeight: viewMode === 'chat' ? 'var(--weight-semibold)' : 'var(--weight-regular)',
+                    background: viewMode === 'chat' ? 'var(--bg)' : 'transparent',
+                    color: viewMode === 'chat' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    boxShadow: viewMode === 'chat' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                    transition: 'all 120ms ease',
+                  }}
+                >
+                  Chat
+                </button>
+                <button
+                  onClick={() => setViewMode('cli')}
+                  style={{
+                    padding: '3px 10px',
+                    borderRadius: 'calc(var(--radius-sm) - 2px)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 'var(--text-caption1)',
+                    fontWeight: viewMode === 'cli' ? 'var(--weight-semibold)' : 'var(--weight-regular)',
+                    background: viewMode === 'cli' ? 'var(--bg)' : 'transparent',
+                    color: viewMode === 'cli' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    boxShadow: viewMode === 'cli' ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                    transition: 'all 120ms ease',
+                    fontFamily: '"SF Mono", Menlo, monospace',
+                  }}
+                >
+                  CLI
+                </button>
+              </div>
+            )}
+
             {/* Copied toast */}
             {copiedField && (
               <div style={{
@@ -741,27 +781,35 @@ function ChatPage() {
             )}
           </div>
 
-          {/* Messages */}
-          <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+          {/* Messages / CLI transcript */}
+          {viewMode === 'cli' && selectedId ? (
+            <CliTranscript sessionId={selectedId} />
+          ) : (
+            <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
+          )}
 
           {/* Queue panel — shows pending messages with cancel buttons */}
-          <QueuePanel
-            sessionId={selectedId}
-            events={events}
-            paused={currentSession?.paused as boolean ?? false}
-          />
+          {viewMode === 'chat' && (
+            <QueuePanel
+              sessionId={selectedId}
+              events={events}
+              paused={currentSession?.paused as boolean ?? false}
+            />
+          )}
 
-          {/* Input */}
-          <ChatInput
-            disabled={false}
-            loading={loading}
-            onSend={handleSend}
-            onInterrupt={handleInterrupt}
-            onNewSession={handleNewChat}
-            onStatusRequest={handleStatusRequest}
-            skillsVersion={skillsVersion}
-            events={events}
-          />
+          {/* Input — hidden in CLI view */}
+          {viewMode === 'chat' && (
+            <ChatInput
+              disabled={false}
+              loading={loading}
+              onSend={handleSend}
+              onInterrupt={handleInterrupt}
+              onNewSession={handleNewChat}
+              onStatusRequest={handleStatusRequest}
+              skillsVersion={skillsVersion}
+              events={events}
+            />
+          )}
         </div>
       </div>
 

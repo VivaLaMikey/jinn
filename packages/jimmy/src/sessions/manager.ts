@@ -16,6 +16,7 @@ import {
   insertMessage,
   updateSession,
 } from "./registry.js";
+import { notifyParentSession } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
@@ -206,11 +207,95 @@ export class SessionManager {
         }
       }
 
+      const wasInterrupted = result.error?.startsWith("Interrupted");
+
+      // Detect rate limit / usage limit errors and auto-retry
+      const isRateLimited = !wasInterrupted && result.error && /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(result.error);
+
+      if (isRateLimited) {
+        logger.info(`Session ${session.id} hit rate limit — will auto-retry in 60s`);
+        if (mcpConfigPath) cleanupMcpConfigFile(session.id);
+
+        updateSession(session.id, {
+          status: "waiting",
+          lastActivity: new Date().toISOString(),
+          lastError: "Rate limited — waiting for usage reset",
+        });
+
+        await connector.replyMessage(target, "⏳ Usage limit reached. Waiting for reset — I'll continue automatically.").catch(() => {});
+
+        // Poll every 60s, retry up to 30 times (30 min)
+        const maxRetries = 30;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          await new Promise(r => setTimeout(r, 60_000));
+
+          // Check if session was stopped while waiting
+          const currentSession = getSessionBySessionKey(msg.sessionKey);
+          if (!currentSession || currentSession.status === "error") {
+            logger.info(`Session ${session.id} stopped while waiting for rate limit reset`);
+            return;
+          }
+
+          logger.info(`Session ${session.id} retrying after rate limit (attempt ${attempt}/${maxRetries})`);
+          const retryResult = await engine.run({
+            prompt: msg.text,
+            resumeSessionId: session.engineSessionId ?? undefined,
+            systemPrompt,
+            cwd: JINN_HOME,
+            bin: engineConfig.bin,
+            model: session.model ?? engineConfig.model,
+            effortLevel,
+            cliFlags: employee?.cliFlags,
+            mcpConfigPath: undefined,
+            attachments: attachments.length > 0 ? attachments : undefined,
+            sessionId: session.id,
+          });
+
+          const stillLimited = retryResult.error && /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(retryResult.error);
+          if (stillLimited) {
+            logger.info(`Session ${session.id} still rate limited (attempt ${attempt})`);
+            continue;
+          }
+
+          // Success or different error — handle normally
+          const retryText = retryResult.result?.trim()
+            ? retryResult.result
+            : retryResult.error || "(No response from engine)";
+
+          insertMessage(session.id, "assistant", retryText);
+          if (retryResult.cost || retryResult.numTurns) {
+            accumulateSessionCost(session.id, retryResult.cost ?? 0, retryResult.numTurns ?? 1);
+          }
+          await connector.replyMessage(target, retryText).catch(() => {});
+          const retryUpdated = updateSession(session.id, {
+            engineSessionId: retryResult.sessionId,
+            status: retryResult.error ? "error" : "idle",
+            replyContext: msg.replyContext,
+            messageId: msg.messageId ?? null,
+            transportMeta: msg.transportMeta ?? null,
+            lastActivity: new Date().toISOString(),
+            lastError: retryResult.error ?? null,
+          });
+          if (retryUpdated) {
+            notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+          }
+          logger.info(`Session ${session.id} resumed after rate limit reset`);
+          return;
+        }
+
+        // Exhausted retries
+        await connector.replyMessage(target, "Usage limit didn't reset within 30 minutes. Please try again later.").catch(() => {});
+        updateSession(session.id, {
+          status: "error",
+          lastActivity: new Date().toISOString(),
+          lastError: "Rate limit did not reset within 30 minutes",
+        });
+        return;
+      }
+
       const responseText = result.result?.trim()
         ? result.result
         : result.error || "(No response from engine)";
-
-      const wasInterrupted = result.error?.startsWith("Interrupted");
 
       insertMessage(session.id, "assistant", responseText);
       if (mcpConfigPath) cleanupMcpConfigFile(session.id);
@@ -226,7 +311,7 @@ export class SessionManager {
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
-      updateSession(session.id, {
+      const updatedSession = updateSession(session.id, {
         engineSessionId: result.sessionId,
         status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
@@ -235,6 +320,9 @@ export class SessionManager {
         lastActivity: new Date().toISOString(),
         lastError: wasInterrupted ? null : (result.error ?? null),
       });
+      if (updatedSession) {
+        notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs });
+      }
 
       logger.info(
         `Session ${session.id} completed in ${result.durationMs ?? 0}ms` +
@@ -247,11 +335,14 @@ export class SessionManager {
       // Clean up temp MCP config on error
       if (mcpConfigPath) cleanupMcpConfigFile(session.id);
 
-      updateSession(session.id, {
+      const erroredSession = updateSession(session.id, {
         status: "error",
         lastActivity: new Date().toISOString(),
         lastError: errMsg,
       });
+      if (erroredSession) {
+        notifyParentSession(erroredSession, { error: errMsg });
+      }
 
       // Clear typing indicator on error
       if (decorateMessages && connector.setTypingStatus) {

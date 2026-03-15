@@ -7,7 +7,7 @@ export function deriveSessionKey(message: Message): string {
   if (message.channel.isThread()) {
     return `discord:thread:${message.channel.id}`;
   }
-  return `discord:${message.channel.id}:${message.id}`;
+  return `discord:${message.channel.id}`;
 }
 
 export function buildReplyContext(message: Message): Record<string, string | null> {

@@ -23,7 +23,7 @@ export class SessionQueue {
     return this.running.has(sessionKey) ? Math.max(0, total - 1) : total;
   }
 
-  getTransportState(sessionKey: string, status?: "idle" | "running" | "error" | "interrupted"): "idle" | "queued" | "running" | "error" | "interrupted" {
+  getTransportState(sessionKey: string, status?: "idle" | "running" | "error" | "waiting" | "interrupted"): "idle" | "queued" | "running" | "error" | "interrupted" {
     if (status === "error") return "error";
     if (status === "interrupted") return "interrupted";
     if (this.running.has(sessionKey)) return "running";

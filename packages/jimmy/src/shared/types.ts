@@ -66,7 +66,7 @@ export interface ConnectorCapabilities {
 }
 
 export interface ConnectorHealth {
-  status: "running" | "stopped" | "error";
+  status: "running" | "stopped" | "error" | "qr_pending";
   detail?: string;
   capabilities: ConnectorCapabilities;
 }
@@ -134,7 +134,7 @@ export interface Session {
   model: string | null;
   title: string | null;
   parentSessionId: string | null;
-  status: "idle" | "running" | "error" | "interrupted";
+  status: "idle" | "running" | "error" | "waiting" | "interrupted";
   effortLevel: string | null;
   totalCost: number;
   totalTurns: number;

@@ -222,7 +222,7 @@ export function ChatSidebar({
       .getSessions()
       .then((data) => {
         const filtered = (data as Session[]).filter(
-          (s) => s.source === 'web' || s.source === 'cron' || !s.source
+          (s) => s.source === 'web' || s.source === 'cron' || s.source === 'whatsapp' || s.source === 'discord' || !s.source
         )
         filtered.sort((a, b) => {
           const ta = a.lastActivity || a.createdAt || ''
