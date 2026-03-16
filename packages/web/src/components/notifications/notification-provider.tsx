@@ -8,22 +8,10 @@ import {
   saveNotifications,
   generateId,
   wsEventToNotification,
-  shouldPushNotify,
 } from "@/lib/notifications";
-import {
-  NotificationContext,
-  schedulePermissionRequest,
-} from "@/hooks/use-notifications";
+import { NotificationContext } from "@/hooks/use-notifications";
 
 const TOAST_DURATION_MS = 5_000;
-
-function sendBrowserNotification(title: string, body: string) {
-  if (typeof window === "undefined") return;
-  if (!("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-  if (!document.hidden) return;
-  new Notification(title, { body, icon: "/favicon.ico", tag: `jinn-${Date.now()}` });
-}
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -34,7 +22,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   // Load from localStorage on mount
   useEffect(() => {
     setNotifications(loadNotifications());
-    schedulePermissionRequest();
   }, []);
 
   // Persist whenever notifications change (skip initial empty state)
@@ -79,10 +66,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       }, TOAST_DURATION_MS);
       toastTimers.current.set(notif.id, timer);
 
-      // Browser push
-      if (shouldPushNotify(event)) {
-        sendBrowserNotification(notif.title, notif.message);
-      }
     },
     [],
   );
