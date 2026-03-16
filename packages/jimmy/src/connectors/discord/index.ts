@@ -20,12 +20,16 @@ import { formatResponse, downloadAttachment } from "./format.js";
 import { deriveSessionKey, buildReplyContext, isOldMessage } from "./threads.js";
 
 export interface DiscordConnectorConfig {
-  botToken: string;
+  botToken?: string;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
   guildId?: string;
   /** Only respond to messages in this channel (right-click channel → Copy Channel ID) */
   channelId?: string;
+  /** Route messages from specific channels to remote Jinn instances */
+  channelRouting?: Record<string, string>;
+  /** If set, this instance proxies all Discord operations through the primary instance at this URL */
+  proxyVia?: string;
 }
 
 export class DiscordConnector implements Connector {
@@ -41,6 +45,14 @@ export class DiscordConnector implements Connector {
 
   constructor(config: DiscordConnectorConfig) {
     this.config = config;
+    // Normalize Discord IDs to strings (YAML may parse large snowflake IDs as numbers)
+    if (this.config.guildId) this.config.guildId = String(this.config.guildId);
+    if (this.config.channelId) this.config.channelId = String(this.config.channelId);
+    if (this.config.channelRouting) {
+      this.config.channelRouting = Object.fromEntries(
+        Object.entries(this.config.channelRouting).map(([k, v]) => [String(k), v])
+      );
+    }
     this.allowedUserIds = new Set(
       Array.isArray(config.allowFrom)
         ? config.allowFrom
@@ -214,6 +226,7 @@ export class DiscordConnector implements Connector {
   private async handleMessage(message: Message): Promise<void> {
     // Ignore bots (including self)
     if (message.author.bot) return;
+    logger.debug(`Discord message from ${message.author.username} in channel ${message.channel.id}`);
 
     // Ignore old messages on boot
     if (
@@ -223,6 +236,14 @@ export class DiscordConnector implements Connector {
 
     // Guild restriction
     if (this.config.guildId && message.guild?.id !== this.config.guildId) return;
+
+    // Channel routing — proxy messages to remote instances
+    const routeTarget = this.config.channelRouting?.[message.channel.id];
+    if (routeTarget) {
+      logger.debug(`Routing Discord message from channel ${message.channel.id} to ${routeTarget}`);
+      await this.proxyToRemote(routeTarget, message);
+      return;
+    }
 
     // Channel restriction — only respond in a specific channel (+ DMs always allowed)
     if (this.config.channelId && message.channel.id !== this.config.channelId && !message.channel.isDMBased()) return;
@@ -275,5 +296,47 @@ export class DiscordConnector implements Connector {
     };
 
     this.handler(incomingMessage);
+  }
+
+  /** Forward a message to a remote Jinn instance via HTTP */
+  private async proxyToRemote(remoteUrl: string, message: Message): Promise<void> {
+    try {
+      const attachments = Array.from(message.attachments.values()).map((att) => ({
+        name: att.name,
+        url: att.url,
+        mimeType: att.contentType ?? "application/octet-stream",
+      }));
+
+      const payload = {
+        sessionKey: deriveSessionKey(message),
+        channel: message.channel.id,
+        thread: message.channel.isThread() ? message.channel.id : undefined,
+        user: message.author.username,
+        userId: message.author.id,
+        text: message.content,
+        messageId: message.id,
+        attachments,
+        replyContext: buildReplyContext(message),
+        transportMeta: {
+          channelName: message.channel.isTextBased() && "name" in message.channel
+            ? (message.channel as TextChannel).name
+            : "dm",
+          guildId: message.guild?.id ?? null,
+          isDM: message.channel.isDMBased(),
+        },
+      };
+
+      const res = await fetch(`${remoteUrl.replace(/\/+$/, "")}/api/connectors/discord/incoming`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        logger.error(`Failed to proxy Discord message to ${remoteUrl}: ${res.status} ${res.statusText}`);
+      }
+    } catch (err) {
+      logger.error(`Discord proxy error to ${remoteUrl}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 }

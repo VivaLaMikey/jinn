@@ -12,12 +12,13 @@ import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSes
 import { SessionManager } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
-import { handleApiRequest, type ApiContext } from "./api.js";
+import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
 import { ensureFilesDir } from "./files.js";
 import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
 import { DiscordConnector } from "../connectors/discord/index.js";
+import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
@@ -123,7 +124,7 @@ export async function startGateway(
   }
   const recoveredQueue = recoverStaleQueueItems();
   if (recoveredQueue > 0) {
-    logger.info(`Cancelled ${recoveredQueue} stale queue item(s) from previous run`);
+    logger.info(`Recovered ${recoveredQueue} in-flight queue item(s) from previous run — reset to pending`);
   }
 
   // Set up engines
@@ -138,7 +139,7 @@ export async function startGateway(
   if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
     connectorNames.push("slack");
   }
-  if (config.connectors?.discord?.botToken) {
+  if (config.connectors?.discord?.botToken || config.connectors?.discord?.proxyVia) {
     connectorNames.push("discord");
   }
   if (config.connectors?.whatsapp) {
@@ -177,9 +178,29 @@ export async function startGateway(
     }
   }
 
-  if (config.connectors?.discord?.botToken) {
+  if (config.connectors?.discord?.proxyVia) {
+    // Remote mode: proxy all Discord operations through the primary instance
     try {
-      const discord = new DiscordConnector(config.connectors.discord);
+      const discord = new RemoteDiscordConnector({
+        proxyVia: config.connectors.discord.proxyVia,
+        channelId: config.connectors.discord.channelId,
+      });
+      discord.onMessage((msg) => {
+        sessionManager.route(msg, discord).catch((err) => {
+          logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+      await discord.start();
+      connectors.push(discord);
+      connectorMap.set("discord", discord);
+      logger.info(`Discord connector started in remote mode (via ${config.connectors.discord.proxyVia})`);
+    } catch (err) {
+      logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
+    }
+  } else if (config.connectors?.discord?.botToken) {
+    // Primary mode: direct Discord bot connection
+    try {
+      const discord = new DiscordConnector(config.connectors.discord as import("../connectors/discord/index.js").DiscordConnectorConfig);
       discord.onMessage((msg) => {
         sessionManager.route(msg, discord).catch((err) => {
           logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
@@ -248,6 +269,9 @@ export async function startGateway(
     emit,
     connectors: connectorMap,
   };
+
+  // Replay any pending web queue items (e.g. gateway restart mid-run)
+  resumePendingWebQueueItems(apiContext);
 
   // Resolve web UI directory — bundled into dist/web/ by postbuild script
   // At runtime __dirname is dist/src/gateway/, so ../../web resolves to dist/web/

@@ -13,6 +13,7 @@ import {
   createSession,
   deleteSession,
   getSessionBySessionKey,
+  getMessages,
   insertMessage,
   updateSession,
 } from "./registry.js";
@@ -33,6 +34,70 @@ export interface RouteOptions {
   engine?: string;
   model?: string;
   title?: string;
+}
+
+function maybeRevertEngineOverride(session: Session): Session {
+  const meta = (session.transportMeta || {}) as Record<string, unknown>;
+  const override = meta["engineOverride"] as Record<string, unknown> | undefined;
+  if (!override) return session;
+
+  const originalEngine = typeof override.originalEngine === "string" ? override.originalEngine : null;
+  const originalEngineSessionId = typeof override.originalEngineSessionId === "string"
+    ? override.originalEngineSessionId
+    : null;
+  const syncSince = typeof override.syncSince === "string" ? override.syncSince : null;
+  const untilIso = typeof override.until === "string" ? override.until : null;
+  if (!originalEngine || !untilIso) return session;
+
+  const until = new Date(untilIso);
+  if (Number.isNaN(until.getTime())) return session;
+  if (until.getTime() > Date.now()) return session;
+
+  const engineSessionsRaw = meta["engineSessions"];
+  const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
+    ? { ...(engineSessionsRaw as Record<string, unknown>) }
+    : {};
+
+  // Preserve the current engine session ID under its engine key
+  if (session.engine && session.engineSessionId) {
+    engineSessions[String(session.engine)] = session.engineSessionId;
+  }
+
+  const restoredSessionId = originalEngineSessionId
+    ?? (typeof engineSessions[originalEngine] === "string" ? (engineSessions[originalEngine] as string) : null);
+
+  const nextMeta = { ...meta, engineSessions } as Record<string, unknown>;
+  if (originalEngine === "claude" && syncSince && session.engine !== "claude") {
+    nextMeta["claudeSyncSince"] = syncSince;
+  }
+  delete (nextMeta as Record<string, unknown>)["engineOverride"];
+  return updateSession(session.id, {
+    engine: originalEngine,
+    engineSessionId: restoredSessionId,
+    transportMeta: nextMeta as any,
+    lastError: null,
+  }) ?? session;
+}
+
+function mergeTransportMeta(
+  existing: Session["transportMeta"],
+  incoming: IncomingMessage["transportMeta"],
+): Session["transportMeta"] {
+  const baseExisting = (existing && typeof existing === "object" && !Array.isArray(existing))
+    ? (existing as Record<string, unknown>)
+    : {};
+  const baseIncoming = (incoming && typeof incoming === "object" && !Array.isArray(incoming))
+    ? (incoming as Record<string, unknown>)
+    : {};
+
+  const merged: Record<string, unknown> = { ...baseExisting, ...baseIncoming };
+
+  // Preserve Jinn internal keys from being overwritten by transport adapters.
+  for (const key of ["engineOverride", "engineSessions", "claudeSyncSince"]) {
+    if (baseExisting[key] !== undefined) merged[key] = baseExisting[key];
+  }
+
+  return merged as any;
 }
 
 export class SessionManager {
@@ -89,13 +154,16 @@ export class SessionManager {
         (opts.employee ? ` (employee: ${opts.employee.name})` : ""),
       );
     } else {
+      const mergedMeta = mergeTransportMeta(session.transportMeta, msg.transportMeta);
       session = updateSession(session.id, {
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,
-        transportMeta: msg.transportMeta ?? null,
+        transportMeta: mergedMeta,
         ...(opts.model ? { model: opts.model } : {}),
       }) ?? session;
     }
+
+    session = maybeRevertEngineOverride(session);
 
     const target = connector.reconstructTarget(msg.replyContext);
     target.messageTs ??= msg.messageId;
@@ -162,7 +230,7 @@ export class SessionManager {
       status: "running",
       replyContext: msg.replyContext,
       messageId: msg.messageId ?? null,
-      transportMeta: msg.transportMeta ?? null,
+      transportMeta: mergeTransportMeta(session.transportMeta, msg.transportMeta),
       lastActivity: new Date().toISOString(),
     });
 
@@ -194,6 +262,21 @@ export class SessionManager {
 
       const effortLevel = resolveEffort(engineConfig, session, employee);
 
+      // If we previously switched to GPT while Claude was rate-limited, inject a sync transcript
+      // so Claude can resume with full context when it comes back online.
+      const syncSinceIso = (session.transportMeta as any)?.claudeSyncSince;
+      let promptToRun = msg.text;
+      const syncSinceMs = typeof syncSinceIso === "string" ? new Date(syncSinceIso).getTime() : NaN;
+      const syncRequested = session.engine === "claude" && typeof syncSinceIso === "string" && Number.isFinite(syncSinceMs);
+      if (syncRequested) {
+        const sinceMessages = getMessages(session.id)
+          .filter((m) => (m.role === "user" || m.role === "assistant") && m.timestamp >= syncSinceMs)
+          .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
+        const transcript = sinceMessages.slice(-20).join("\n\n");
+        promptToRun =
+          `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
+      }
+
       // Heuristic preflight warning: Claude usage limits don't expose a precise "remaining" budget.
       // If we've hit the limit recently and this looks like a heavy turn, warn before we spend time.
       if (decorateMessages && session.engine === "claude" && isLikelyNearClaudeUsageLimit()) {
@@ -214,7 +297,7 @@ export class SessionManager {
       }
 
       const result = await engine.run({
-        prompt: msg.text,
+        prompt: promptToRun,
         resumeSessionId: session.engineSessionId ?? undefined,
         systemPrompt,
         cwd: JINN_HOME,
@@ -233,6 +316,118 @@ export class SessionManager {
       const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
       if (rateLimit.limited) {
         recordClaudeRateLimit(rateLimit.resetsAt);
+
+        const strategy = this.config.sessions?.rateLimitStrategy ?? "fallback";
+
+        // Optional fallback: switch to GPT (Codex) while Claude resets
+        if (session.engine === "claude" && strategy === "fallback") {
+          const fallbackName = this.config.sessions?.fallbackEngine ?? "codex";
+          const fallbackEngine = this.engines.get(fallbackName);
+          if (fallbackEngine) {
+            const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
+            const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
+            const syncSince = new Date().toISOString();
+            const resumeText = resumeAt
+              ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+              : null;
+
+            notifyDiscordChannel(
+              `⚠️ Claude usage limit reached. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} switching to GPT.`,
+            );
+
+            await connector.replyMessage(
+              target,
+              `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`,
+            ).catch(() => {});
+
+            const nextMeta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
+            const engineSessionsRaw = nextMeta.engineSessions;
+            const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
+              ? { ...(engineSessionsRaw as Record<string, unknown>) }
+              : {};
+            if (session.engineSessionId) {
+              engineSessions.claude = session.engineSessionId;
+            }
+            nextMeta.engineSessions = engineSessions;
+            nextMeta.engineOverride = { originalEngine: "claude", originalEngineSessionId: session.engineSessionId, until: until.toISOString(), syncSince };
+
+            updateSession(session.id, {
+              engine: fallbackName,
+              // Keep Claude engine_session_id intact for later restore; Codex will return its own thread id.
+              transportMeta: nextMeta as any,
+              status: "running",
+              lastActivity: new Date().toISOString(),
+              lastError: resumeAt
+                ? `Claude usage limit — using GPT until ${resumeAt.toISOString()}`
+                : "Claude usage limit — using GPT temporarily",
+            });
+
+            const fallbackConfig = this.config.engines.codex;
+            const fallbackEffort = resolveEffort(fallbackConfig, session, employee);
+            const codexResume = typeof engineSessions.codex === "string" ? (engineSessions.codex as string) : undefined;
+            const history = getMessages(session.id)
+              .filter((m) => m.role === "user" || m.role === "assistant")
+              .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
+            const historyText = history.slice(-12).join("\n\n");
+            const fallbackPrompt = codexResume
+              ? msg.text
+              : `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${historyText}`;
+            const fallbackResult = await fallbackEngine.run({
+              prompt: fallbackPrompt,
+              resumeSessionId: codexResume,
+              systemPrompt,
+              cwd: JINN_HOME,
+              bin: fallbackConfig.bin,
+              model: session.model ?? fallbackConfig.model,
+              effortLevel: fallbackEffort,
+              cliFlags: employee?.cliFlags,
+              attachments: attachments.length > 0 ? attachments : undefined,
+              sessionId: session.id,
+            });
+
+            const fallbackText = fallbackResult.result?.trim()
+              ? fallbackResult.result
+              : fallbackResult.error || "(No response from engine)";
+
+            insertMessage(session.id, "assistant", fallbackText);
+            if (fallbackResult.cost || fallbackResult.numTurns) {
+              accumulateSessionCost(session.id, fallbackResult.cost ?? 0, fallbackResult.numTurns ?? 1);
+            }
+
+            // Persist Codex thread id so future fallbacks can resume it
+            const nextEngineSessions = { ...engineSessions };
+            if (fallbackResult.sessionId) {
+              nextEngineSessions.codex = fallbackResult.sessionId;
+            }
+            const metaAfter = { ...(getSessionBySessionKey(msg.sessionKey)?.transportMeta || nextMeta) } as Record<string, unknown>;
+            metaAfter.engineSessions = nextEngineSessions;
+            updateSession(session.id, { transportMeta: metaAfter as any });
+
+            if (decorateMessages && connector.setTypingStatus) {
+              await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+            }
+            await connector.replyMessage(target, fallbackText).catch(() => {});
+            if (decorateMessages && capabilities.reactions) {
+              await connector.removeReaction(target, "eyes").catch(() => {});
+            }
+
+            const updated = updateSession(session.id, {
+              engineSessionId: fallbackResult.sessionId,
+              status: fallbackResult.error ? "error" : "idle",
+              replyContext: msg.replyContext,
+              messageId: msg.messageId ?? null,
+              transportMeta: mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta),
+              lastActivity: new Date().toISOString(),
+              lastError: fallbackResult.error ?? null,
+            });
+            if (updated) {
+              notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs });
+            }
+            return;
+          }
+        }
+
+        // Wait strategy: wait until reset and retry automatically
         const waitEmoji = "hourglass_flowing_sand";
 
         const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
@@ -442,7 +637,13 @@ export class SessionManager {
         status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,
-        transportMeta: msg.transportMeta ?? null,
+        transportMeta: (() => {
+          const merged = mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta) as Record<string, unknown>;
+          if (syncRequested && !rateLimit.limited && !wasInterrupted) {
+            delete merged["claudeSyncSince"];
+          }
+          return merged as any;
+        })(),
         lastActivity: new Date().toISOString(),
         lastError: wasInterrupted ? null : (result.error ?? null),
       });

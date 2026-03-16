@@ -43,6 +43,8 @@ interface Config {
     maxDurationMinutes?: number
     maxCostUsd?: number
     interruptOnNewMessage?: boolean
+    rateLimitStrategy?: "wait" | "fallback"
+    fallbackEngine?: "codex"
   }
   connectors?: {
     slack?: {
@@ -1309,6 +1311,37 @@ export default function SettingsPage() {
                   When enabled, sending a new message to a running session will stop the
                   current agent and start processing your new message immediately. When
                   disabled, messages are queued.
+                </div>
+
+                <div
+                  style={{
+                    borderTop: "1px solid var(--separator)",
+                    marginTop: "var(--space-3)",
+                    paddingTop: "var(--space-3)",
+                  }}
+                />
+
+                <FieldRow label="When Claude Hits Usage Limit">
+                  <SettingsSelect
+                    value={config.sessions?.rateLimitStrategy ?? "fallback"}
+                    onChange={(v) =>
+                      updateConfig(["sessions", "rateLimitStrategy"], v)
+                    }
+                    options={[
+                      { value: "wait", label: "Wait & Auto-Resume" },
+                      { value: "fallback", label: "Switch to GPT (Codex)" },
+                    ]}
+                  />
+                </FieldRow>
+                <div
+                  style={{
+                    fontSize: "var(--text-caption1)",
+                    color: "var(--label-secondary)",
+                    marginTop: 4,
+                  }}
+                >
+                  “Wait” pauses the session and continues automatically when Claude resets.
+                  “Switch” answers immediately using GPT, then returns to Claude once the reset window passes.
                 </div>
               </Section>
 

@@ -59,6 +59,7 @@ export interface EngineResult {
 
 export interface EngineRateLimitInfo {
   status?: string;
+  /** Unix timestamp in seconds */
   resetsAt?: number;
   rateLimitType?: string;
   overageStatus?: string;
@@ -256,10 +257,16 @@ export interface SlackConnectorConfig {
 }
 
 export interface DiscordConnectorConfig {
-  botToken: string;
+  botToken?: string;       // Make optional — not needed in proxy mode
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
   guildId?: string;
+  /** Only respond to messages in this channel */
+  channelId?: string;
+  /** Route messages from specific channels to remote Jinn instances */
+  channelRouting?: Record<string, string>;
+  /** URL of the primary Jinn instance to proxy Discord I/O through (secondary/remote mode) */
+  proxyVia?: string;
 }
 
 export interface WhatsAppConnectorConfig {
@@ -296,6 +303,10 @@ export interface JinnConfig {
     maxDurationMinutes?: number;
     maxCostUsd?: number;
     interruptOnNewMessage?: boolean;
+    /** What to do when Claude hits a usage/rate limit. Default: "fallback" */
+    rateLimitStrategy?: "wait" | "fallback";
+    /** Engine to use when rateLimitStrategy="fallback". Default: "codex" */
+    fallbackEngine?: "codex";
   };
   cron?: {
     defaultDelivery?: CronDelivery;

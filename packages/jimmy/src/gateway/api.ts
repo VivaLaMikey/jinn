@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { CronJob, Engine, JinnConfig, Session } from "../shared/types.js";
+import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -21,6 +21,7 @@ import {
   cancelQueueItem,
   getQueueItems,
   cancelAllPendingQueueItems,
+  listAllPendingQueueItems,
 } from "../sessions/registry.js";
 import {
   CONFIG_PATH,
@@ -45,6 +46,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
+import { handleMeetingsApi } from "../meetings/api.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -55,19 +57,96 @@ export interface ApiContext {
   connectors: Map<string, import("../shared/types.js").Connector>;
 }
 
+export function resumePendingWebQueueItems(context: ApiContext): void {
+  const pending = listAllPendingQueueItems();
+  if (pending.length === 0) return;
+
+  let resumed = 0;
+  for (const item of pending) {
+    let session = getSession(item.sessionId);
+    if (!session) {
+      cancelQueueItem(item.id);
+      continue;
+    }
+    if (session.source !== "web") continue;
+    session = maybeRevertEngineOverride(session);
+
+    const config = context.getConfig();
+    const engine = context.sessionManager.getEngine(session.engine);
+    if (!engine) {
+      cancelQueueItem(item.id);
+      updateSession(session.id, { status: "error", lastActivity: new Date().toISOString(), lastError: `Engine "${session.engine}" not available` });
+      continue;
+    }
+
+    // Ensure the session is in a runnable state
+    updateSession(session.id, { status: "running", lastActivity: new Date().toISOString(), lastError: null });
+
+    dispatchWebSessionRun(session, item.prompt, engine, config, context, { queueItemId: item.id });
+    resumed++;
+  }
+
+  if (resumed > 0) {
+    logger.info(`Re-dispatched ${resumed} pending web queue item(s) after gateway restart`);
+  }
+}
+
+function maybeRevertEngineOverride(session: Session): Session {
+  const meta = (session.transportMeta || {}) as Record<string, unknown>;
+  const override = meta["engineOverride"] as Record<string, unknown> | undefined;
+  if (!override) return session;
+
+  const originalEngine = typeof override.originalEngine === "string" ? override.originalEngine : null;
+  const originalEngineSessionId = typeof override.originalEngineSessionId === "string"
+    ? override.originalEngineSessionId
+    : null;
+  const syncSince = typeof override.syncSince === "string" ? override.syncSince : null;
+  const untilIso = typeof override.until === "string" ? override.until : null;
+  if (!originalEngine || !untilIso) return session;
+
+  const until = new Date(untilIso);
+  if (Number.isNaN(until.getTime())) return session;
+  if (until.getTime() > Date.now()) return session;
+
+  const engineSessionsRaw = meta["engineSessions"];
+  const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
+    ? { ...(engineSessionsRaw as Record<string, unknown>) }
+    : {};
+
+  // Preserve the current engine session ID under its engine key
+  if (session.engine && session.engineSessionId) {
+    engineSessions[String(session.engine)] = session.engineSessionId;
+  }
+
+  const restoredSessionId = originalEngineSessionId
+    ?? (typeof engineSessions[originalEngine] === "string" ? (engineSessions[originalEngine] as string) : null);
+
+  const nextMeta = { ...meta, engineSessions } as Record<string, unknown>;
+  if (originalEngine === "claude" && syncSince && session.engine !== "claude") {
+    nextMeta["claudeSyncSince"] = syncSince;
+  }
+  delete (nextMeta as Record<string, unknown>)["engineOverride"];
+  return updateSession(session.id, {
+    engine: originalEngine,
+    engineSessionId: restoredSessionId,
+    transportMeta: nextMeta as any,
+    lastError: null,
+  }) ?? session;
+}
+
 function dispatchWebSessionRun(
   session: Session,
   prompt: string,
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
-  opts?: { delayMs?: number },
+  opts?: { delayMs?: number; queueItemId?: string },
 ): void {
   const run = async () => {
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
       await runWebSession(session, prompt, engine, config, context);
-    });
+    }, opts?.queueItemId);
   };
 
   const launch = () => {
@@ -205,6 +284,12 @@ export async function handleApiRequest(
   const method = req.method || "GET";
 
   try {
+    // Meeting API routes (delegated to meetings module)
+    if (pathname.startsWith("/api/meetings")) {
+      const handled = await handleMeetingsApi(req, res, context);
+      if (handled) return;
+    }
+
     // GET /api/status
     if (method === "GET" && pathname === "/api/status") {
       const config = context.getConfig();
@@ -486,7 +571,11 @@ export async function handleApiRequest(
       });
       session.status = "running";
 
-      dispatchWebSessionRun(session, prompt, engine, config, context);
+      const queueSessionKey = session.sessionKey || session.sourceRef || session.id;
+      const queueItemId = enqueueQueueItem(session.id, queueSessionKey, prompt);
+      context.emit("queue:updated", { sessionId: session.id, sessionKey: queueSessionKey });
+
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId });
 
       return json(res, serializeSession(session, context), 201);
     }
@@ -494,8 +583,9 @@ export async function handleApiRequest(
     // POST /api/sessions/:id/message
     params = matchRoute("/api/sessions/:id/message", pathname);
     if (method === "POST" && params) {
-      const session = getSession(params.id);
+      let session = getSession(params.id);
       if (!session) return notFound(res);
+      session = maybeRevertEngineOverride(session);
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -517,6 +607,8 @@ export async function handleApiRequest(
       // Emit notification event for UI display (renders as system banner, not user bubble)
       if (isNotification) {
         context.emit("session:notification", { sessionId: session.id, message: prompt });
+        // Don't return early — fall through to enqueue + dispatch so the engine
+        // (e.g. the COO) actually processes the notification and can respond.
       }
 
       if (!isNotification && session.status === "waiting") {
@@ -531,8 +623,9 @@ export async function handleApiRequest(
       }
 
       // If a turn is already running, check whether we should interrupt or queue.
+      // Notifications (child completion callbacks) should never interrupt — just queue.
       if (session.status === "running") {
-        if ((config.sessions?.interruptOnNewMessage ?? true) && isInterruptibleEngine(engine) && engine.isAlive(session.id)) {
+        if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && isInterruptibleEngine(engine) && engine.isAlive(session.id)) {
           logger.info(`Interrupting running session ${session.id} for new message`);
           engine.kill(session.id, "Interrupted: new message received");
           // Wait briefly for the process to exit so the queue slot frees up
@@ -557,7 +650,11 @@ export async function handleApiRequest(
       // Clear any pending cancellation so the new message runs normally.
       context.sessionManager.getQueue().clearCancelled(session.sessionKey || session.sourceRef || session.id);
 
-      dispatchWebSessionRun(session, prompt, engine, config, context);
+      const sessionKey = session.sessionKey || session.sourceRef || session.id;
+      const queueItemId = enqueueQueueItem(session.id, sessionKey, prompt);
+      context.emit("queue:updated", { sessionId: session.id, sessionKey });
+
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId });
 
       return json(res, { status: "queued", sessionId: session.id });
     }
@@ -950,6 +1047,21 @@ export async function handleApiRequest(
       if (body.engines !== undefined && (typeof body.engines !== "object" || Array.isArray(body.engines))) {
         return badRequest(res, "engines must be an object");
       }
+      // Strip masked placeholder values ("***") from connector secrets
+      // so a GET→PUT round-trip doesn't overwrite real tokens.
+      const SECRET_FIELDS = ["token", "signingSecret", "botToken", "appToken"];
+      if (body.connectors && typeof body.connectors === "object") {
+        for (const [, connectorCfg] of Object.entries(body.connectors)) {
+          if (connectorCfg && typeof connectorCfg === "object") {
+            for (const field of SECRET_FIELDS) {
+              if ((connectorCfg as Record<string, unknown>)[field] === "***") {
+                delete (connectorCfg as Record<string, unknown>)[field];
+              }
+            }
+          }
+        }
+      }
+
       // Deep-merge incoming config with existing config to preserve
       // fields not included in the update (e.g. connector tokens).
       let existing: Record<string, unknown> = {};
@@ -979,6 +1091,103 @@ export async function handleApiRequest(
       const allLines = buf.toString("utf-8").split("\n").filter(Boolean);
       const lines = allLines.slice(-n);
       return json(res, { lines });
+    }
+
+    // POST /api/connectors/discord/incoming — receive proxied Discord messages from primary instance
+    if (method === "POST" && pathname === "/api/connectors/discord/incoming") {
+      const connector = context.connectors.get("discord");
+      if (!connector) return notFound(res);
+      if (!("deliverMessage" in connector)) {
+        return json(res, { error: "Discord connector is not in remote mode" }, 400);
+      }
+
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+
+      // Download attachments from Discord CDN URLs to local temp
+      const { downloadAttachment } = await import("../connectors/discord/format.js");
+      const attachments = await Promise.all(
+        (body.attachments || []).map(async (att: { name: string; url: string; mimeType: string }) => {
+          if (att.url) {
+            try {
+              const localPath = await downloadAttachment(att.url, TMP_DIR, att.name);
+              return { name: att.name, url: att.url, mimeType: att.mimeType, localPath };
+            } catch {
+              return { name: att.name, url: att.url, mimeType: att.mimeType };
+            }
+          }
+          return att;
+        }),
+      );
+
+      const incomingMsg: IncomingMessage = {
+        connector: "discord",
+        source: "discord",
+        sessionKey: body.sessionKey,
+        channel: body.channel,
+        thread: body.thread,
+        user: body.user,
+        userId: body.userId,
+        text: body.text,
+        messageId: body.messageId,
+        attachments,
+        replyContext: body.replyContext || {},
+        transportMeta: body.transportMeta,
+        raw: body,
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).deliverMessage(incomingMsg);
+      return json(res, { status: "delivered" });
+    }
+
+    // POST /api/connectors/discord/proxy — proxy connector operations from remote instances
+    if (method === "POST" && pathname === "/api/connectors/discord/proxy") {
+      const connector = context.connectors.get("discord");
+      if (!connector) return notFound(res);
+
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+
+      const action = body.action as string;
+      const target = body.target as Target | undefined;
+      let messageId: string | undefined;
+
+      switch (action) {
+        case "sendMessage":
+          if (!target || !body.text) return badRequest(res, "target and text are required");
+          messageId = (await connector.sendMessage(target, body.text)) as string | undefined;
+          break;
+        case "replyMessage":
+          if (!target || !body.text) return badRequest(res, "target and text are required");
+          messageId = (await connector.replyMessage(target, body.text)) as string | undefined;
+          break;
+        case "editMessage":
+          if (!target || !body.text) return badRequest(res, "target and text are required");
+          await connector.editMessage(target, body.text);
+          break;
+        case "addReaction":
+          if (!target || !body.emoji) return badRequest(res, "target and emoji are required");
+          await connector.addReaction(target, body.emoji);
+          break;
+        case "removeReaction":
+          if (!target || !body.emoji) return badRequest(res, "target and emoji are required");
+          await connector.removeReaction(target, body.emoji);
+          break;
+        case "setTypingStatus":
+          if (connector.setTypingStatus) {
+            await connector.setTypingStatus(body.channelId ?? "", body.threadTs, body.status ?? "");
+          }
+          break;
+        default:
+          return badRequest(res, `Unknown proxy action: ${action}`);
+      }
+
+      return json(res, { status: "ok", messageId });
     }
 
     // POST /api/connectors/:name/send — send a message via a connector
@@ -1480,8 +1689,21 @@ async function runWebSession(
       });
     }, 5000);
 
+    const syncSinceIso = (currentSession.transportMeta as any)?.claudeSyncSince;
+    const syncSinceMs = typeof syncSinceIso === "string" ? new Date(syncSinceIso).getTime() : NaN;
+    const syncRequested = currentSession.engine === "claude" && typeof syncSinceIso === "string" && Number.isFinite(syncSinceMs);
+    const promptToRun = syncRequested
+      ? (() => {
+        const sinceMessages = getMessages(currentSession.id)
+          .filter((m) => (m.role === "user" || m.role === "assistant") && m.timestamp >= syncSinceMs)
+          .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
+        const transcript = sinceMessages.slice(-20).join("\n\n");
+        return `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
+      })()
+      : prompt;
+
     const result = await engine.run({
-      prompt,
+      prompt: promptToRun,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
       systemPrompt,
       cwd: JINN_HOME,
@@ -1524,6 +1746,119 @@ async function runWebSession(
 
     if (rateLimit.limited) {
       recordClaudeRateLimit(rateLimit.resetsAt);
+      const strategy = config.sessions?.rateLimitStrategy ?? "fallback";
+
+      // Optional fallback: switch to GPT (Codex) while Claude resets
+      if (currentSession.engine === "claude" && strategy === "fallback") {
+        const fallbackName = config.sessions?.fallbackEngine ?? "codex";
+        const fallbackEngine = context.sessionManager.getEngine(fallbackName);
+        if (fallbackEngine) {
+          const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
+          const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
+          const syncSince = new Date().toISOString();
+
+          const resumeText = resumeAt
+            ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+            : null;
+
+          const notificationText =
+            `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`;
+          insertMessage(currentSession.id, "notification", notificationText);
+          context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
+
+          const nextMeta = { ...(currentSession.transportMeta || {}) } as Record<string, unknown>;
+          const engineSessionsRaw = nextMeta.engineSessions;
+          const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
+            ? { ...(engineSessionsRaw as Record<string, unknown>) }
+            : {};
+          if (currentSession.engineSessionId) {
+            engineSessions.claude = currentSession.engineSessionId;
+          }
+          nextMeta.engineSessions = engineSessions;
+          nextMeta.engineOverride = { originalEngine: "claude", originalEngineSessionId: currentSession.engineSessionId, until: until.toISOString(), syncSince };
+
+          updateSession(currentSession.id, {
+            engine: fallbackName,
+            transportMeta: nextMeta as any,
+            status: "running",
+            lastActivity: new Date().toISOString(),
+            lastError: resumeAt
+              ? `Claude usage limit — using GPT until ${resumeAt.toISOString()}`
+              : "Claude usage limit — using GPT temporarily",
+          });
+
+          notifyDiscordChannel(
+            `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} switching to GPT.`,
+          );
+
+          const fallbackConfig = config.engines.codex;
+          const fallbackEffort = resolveEffort(fallbackConfig, currentSession, employee);
+          const codexResume = typeof engineSessions.codex === "string" ? (engineSessions.codex as string) : undefined;
+          const history = getMessages(currentSession.id)
+            .filter((m) => m.role === "user" || m.role === "assistant")
+            .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
+          const historyText = history.slice(-12).join("\n\n");
+          const fallbackPrompt = codexResume
+            ? prompt
+            : `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${historyText}`;
+          const fallbackResult = await fallbackEngine.run({
+            prompt: fallbackPrompt,
+            resumeSessionId: codexResume,
+            systemPrompt,
+            cwd: JINN_HOME,
+            bin: fallbackConfig.bin,
+            model: currentSession.model ?? fallbackConfig.model,
+            effortLevel: fallbackEffort,
+            cliFlags: employee?.cliFlags,
+            sessionId: currentSession.id,
+            onStream: (delta) => {
+              context.emit("session:delta", {
+                sessionId: currentSession.id,
+                type: delta.type,
+                content: delta.content,
+                toolName: delta.toolName,
+              });
+            },
+          });
+
+          if (fallbackResult.result) {
+            insertMessage(currentSession.id, "assistant", fallbackResult.result);
+          }
+
+          // Persist Codex thread id so future fallbacks can resume it
+          const nextEngineSessions = { ...engineSessions };
+          if (fallbackResult.sessionId) {
+            nextEngineSessions.codex = fallbackResult.sessionId;
+          }
+          const metaAfter = { ...(getSession(currentSession.id)?.transportMeta || nextMeta) } as Record<string, unknown>;
+          metaAfter.engineSessions = nextEngineSessions;
+          updateSession(currentSession.id, { transportMeta: metaAfter as any });
+
+          const completedFallback = updateSession(currentSession.id, {
+            engineSessionId: fallbackResult.sessionId,
+            status: fallbackResult.error ? "error" : "idle",
+            lastActivity: new Date().toISOString(),
+            lastError: fallbackResult.error ?? null,
+          });
+          if (completedFallback) {
+            notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs });
+          }
+
+          context.emit("session:completed", {
+            sessionId: currentSession.id,
+            employee: currentSession.employee || config.portal?.portalName || "Jinn",
+            title: currentSession.title,
+            result: fallbackResult.result,
+            error: fallbackResult.error || null,
+            cost: fallbackResult.cost,
+            durationMs: fallbackResult.durationMs,
+          });
+
+          return;
+        }
+      }
+
+      // Otherwise: wait until reset and retry automatically
       const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
       const deadlineMs = computeRateLimitDeadlineMs(
         rateLimit.resetsAt,
@@ -1705,6 +2040,14 @@ async function runWebSession(
       lastActivity: new Date().toISOString(),
       lastError: result.error ?? null,
     });
+    if (syncRequested && !rateLimit.limited && !wasInterrupted) {
+      const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
+      if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+        const nextMeta = { ...meta } as Record<string, unknown>;
+        delete nextMeta["claudeSyncSince"];
+        updateSession(currentSession.id, { transportMeta: nextMeta as any });
+      }
+    }
     if (completedSession) {
       notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs });
     }

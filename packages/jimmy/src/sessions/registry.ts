@@ -270,7 +270,8 @@ export function getSessionBySessionKey(sessionKey: string): Session | undefined 
 }
 
 export interface UpdateSessionFields {
-  engineSessionId?: string;
+  engine?: string;
+  engineSessionId?: string | null;
   status?: Session['status'];
   model?: string | null;
   replyContext?: ReplyContext | null;
@@ -285,6 +286,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   const sets: string[] = [];
   const values: unknown[] = [];
 
+  if (updates.engine !== undefined) {
+    sets.push('engine = ?');
+    values.push(updates.engine);
+  }
   if (updates.engineSessionId !== undefined) {
     sets.push('engine_session_id = ?');
     values.push(updates.engineSessionId);
@@ -488,10 +493,19 @@ export function cancelAllPendingQueueItems(sessionKey: string): number {
 
 export function recoverStaleQueueItems(): number {
   const db = initDb();
+  // If the gateway restarts mid-run, move any "running" items back to "pending"
+  // so they can be replayed. Do NOT cancel pending work.
   const result = db.prepare(
-    "UPDATE queue_items SET status = 'cancelled' WHERE status IN ('pending', 'running')"
+    "UPDATE queue_items SET status = 'pending', started_at = NULL WHERE status = 'running'"
   ).run();
   return result.changes;
+}
+
+export function listAllPendingQueueItems(): QueueItem[] {
+  const db = initDb();
+  return db.prepare(
+    "SELECT id, session_id as sessionId, session_key as sessionKey, prompt, status, position, created_at as createdAt, started_at as startedAt, completed_at as completedAt FROM queue_items WHERE status = 'pending' ORDER BY created_at ASC, position ASC"
+  ).all() as QueueItem[];
 }
 
 // ── File management ──────────────────────────────────────────────────
