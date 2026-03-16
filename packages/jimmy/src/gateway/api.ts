@@ -46,6 +46,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
+import { handleMeetingsApi } from "../meetings/api.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -283,6 +284,12 @@ export async function handleApiRequest(
   const method = req.method || "GET";
 
   try {
+    // Meeting API routes (delegated to meetings module)
+    if (pathname.startsWith("/api/meetings")) {
+      const handled = await handleMeetingsApi(req, res, context);
+      if (handled) return;
+    }
+
     // GET /api/status
     if (method === "GET" && pathname === "/api/status") {
       const config = context.getConfig();
@@ -1040,6 +1047,21 @@ export async function handleApiRequest(
       if (body.engines !== undefined && (typeof body.engines !== "object" || Array.isArray(body.engines))) {
         return badRequest(res, "engines must be an object");
       }
+      // Strip masked placeholder values ("***") from connector secrets
+      // so a GET→PUT round-trip doesn't overwrite real tokens.
+      const SECRET_FIELDS = ["token", "signingSecret", "botToken", "appToken"];
+      if (body.connectors && typeof body.connectors === "object") {
+        for (const [, connectorCfg] of Object.entries(body.connectors)) {
+          if (connectorCfg && typeof connectorCfg === "object") {
+            for (const field of SECRET_FIELDS) {
+              if ((connectorCfg as Record<string, unknown>)[field] === "***") {
+                delete (connectorCfg as Record<string, unknown>)[field];
+              }
+            }
+          }
+        }
+      }
+
       // Deep-merge incoming config with existing config to preserve
       // fields not included in the update (e.g. connector tokens).
       let existing: Record<string, unknown> = {};
