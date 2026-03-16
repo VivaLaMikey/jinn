@@ -43,6 +43,14 @@ export class DiscordConnector implements Connector {
 
   constructor(config: DiscordConnectorConfig) {
     this.config = config;
+    // Normalize Discord IDs to strings (YAML may parse large snowflake IDs as numbers)
+    if (this.config.guildId) this.config.guildId = String(this.config.guildId);
+    if (this.config.channelId) this.config.channelId = String(this.config.channelId);
+    if (this.config.channelRouting) {
+      this.config.channelRouting = Object.fromEntries(
+        Object.entries(this.config.channelRouting).map(([k, v]) => [String(k), v])
+      );
+    }
     this.allowedUserIds = new Set(
       Array.isArray(config.allowFrom)
         ? config.allowFrom
@@ -216,6 +224,7 @@ export class DiscordConnector implements Connector {
   private async handleMessage(message: Message): Promise<void> {
     // Ignore bots (including self)
     if (message.author.bot) return;
+    logger.debug(`Discord message from ${message.author.username} in channel ${message.channel.id}`);
 
     // Ignore old messages on boot
     if (
@@ -229,6 +238,7 @@ export class DiscordConnector implements Connector {
     // Channel routing — proxy messages to remote instances
     const routeTarget = this.config.channelRouting?.[message.channel.id];
     if (routeTarget) {
+      logger.debug(`Routing Discord message from channel ${message.channel.id} to ${routeTarget}`);
       await this.proxyToRemote(routeTarget, message);
       return;
     }
