@@ -347,6 +347,24 @@ export class ClaudeEngine implements InterruptibleEngine {
       return { type: "__rate_limit", info };
     }
 
+    // Partial assistant messages contain the full accumulated text so far.
+    // Use these as snapshots to correct any dropped text_delta events.
+    if (msgType === "assistant") {
+      const message = msg.message as Record<string, unknown> | undefined;
+      if (message) {
+        const content = message.content as Array<Record<string, unknown>> | undefined;
+        if (Array.isArray(content)) {
+          const textParts = content
+            .filter((b) => b.type === "text" && typeof b.text === "string")
+            .map((b) => b.text as string);
+          if (textParts.length > 0) {
+            return { type: "delta", delta: { type: "text_snapshot", content: textParts.join("") } };
+          }
+        }
+      }
+      return null;
+    }
+
     if (msgType === "stream_event") {
       const event = msg.event as Record<string, unknown> | undefined;
       if (!event) return null;

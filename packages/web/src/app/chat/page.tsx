@@ -63,7 +63,9 @@ function ChatPage() {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const sessionPickerRef = useRef<HTMLDivElement>(null)
-  const { events, connectionSeq, skillsVersion } = useGateway()
+  const { events, connectionSeq, skillsVersion, subscribe } = useGateway()
+  const selectedIdRef = useRef(selectedId)
+  useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
   const searchParams = useSearchParams()
   const onboardingTriggered = useRef(false)
   // When set, the current session is a stub awaiting the user's first message
@@ -137,153 +139,154 @@ function ChatPage() {
     }
   }, [])
 
-  // Listen for session events (tool calls + completion)
+  // Listen for session events via subscribe — processes every event synchronously,
+  // bypassing React 18 automatic batching that would otherwise drop intermediate deltas.
   useEffect(() => {
-    if (events.length === 0) return
-    const latest = events[events.length - 1]
-    const payload = latest.payload as Record<string, unknown>
+    return subscribe((event, payload) => {
+      const p = payload as Record<string, unknown>
+      const sid = selectedIdRef.current
+      if (!sid || p.sessionId !== sid) return
 
-    const matchesSession = selectedId && payload.sessionId === selectedId
-    if (!matchesSession) return
+      if (event === 'session:delta') {
+        const deltaType = String(p.type || 'text')
 
-    if (latest.event === 'session:delta') {
-      const deltaType = String(payload.type || 'text')
-
-      if (deltaType === 'text') {
-        const chunk = String(payload.content || '')
-        streamingTextRef.current += chunk
-        setStreamingText(streamingTextRef.current)
-      } else if (deltaType === 'tool_use') {
-        // If we were streaming text, flush it as a message first
-        if (streamingTextRef.current) {
-          const flushed = streamingTextRef.current
-          streamingTextRef.current = ''
-          setStreamingText('')
+        if (deltaType === 'text') {
+          const chunk = String(p.content || '')
+          streamingTextRef.current += chunk
+          setStreamingText(streamingTextRef.current)
+        } else if (deltaType === 'text_snapshot') {
+          // Full text snapshot from assistant partial message — replace streaming text
+          // to correct any dropped deltas
+          const snapshot = String(p.content || '')
+          if (snapshot.length >= streamingTextRef.current.length) {
+            streamingTextRef.current = snapshot
+            setStreamingText(snapshot)
+          }
+        } else if (deltaType === 'tool_use') {
+          // If we were streaming text, flush it as a message first
+          if (streamingTextRef.current) {
+            const flushed = streamingTextRef.current
+            streamingTextRef.current = ''
+            setStreamingText('')
+            setMessages((prev) => {
+              if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
+              const updated = [
+                ...prev,
+                {
+                  id: crypto.randomUUID(),
+                  role: 'assistant' as const,
+                  content: flushed,
+                  timestamp: Date.now(),
+                },
+              ]
+              persistIntermediate(updated, sid)
+              return updated
+            })
+          }
+          const toolName = String(p.toolName || 'tool')
           setMessages((prev) => {
-            // Mark where intermediate messages start (if not already set)
-            if (intermediateStartRef.current < 0) {
-              intermediateStartRef.current = prev.length
-            }
+            if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
             const updated = [
               ...prev,
               {
                 id: crypto.randomUUID(),
                 role: 'assistant' as const,
-                content: flushed,
+                content: `Using ${toolName}`,
                 timestamp: Date.now(),
+                toolCall: toolName,
               },
             ]
-            persistIntermediate(updated, selectedId || (payload.sessionId as string))
+            persistIntermediate(updated, sid)
+            return updated
+          })
+        } else if (deltaType === 'tool_result') {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last && last.role === 'assistant' && last.toolCall) {
+              updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
+            }
+            persistIntermediate(updated, sid)
             return updated
           })
         }
-        const toolName = String(payload.toolName || 'tool')
-        setMessages((prev) => {
-          if (intermediateStartRef.current < 0) {
-            intermediateStartRef.current = prev.length
-          }
-          const updated = [
+      }
+
+      if (event === 'session:notification') {
+        // Internal notification (e.g. child session completed) — display as a system notification
+        const notifMessage = String(p.message || '')
+        if (notifMessage) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'notification' as const,
+              content: notifMessage,
+              timestamp: Date.now(),
+            },
+          ])
+        }
+      }
+
+      if (event === 'session:interrupted') {
+        // Engine was interrupted — clear streaming, wait for new turn
+        streamingTextRef.current = ''
+        setStreamingText('')
+      }
+
+      if (event === 'session:stopped') {
+        setLoading(false)
+        setStreamingText('')
+      }
+
+      if (event === 'session:completed') {
+        // Clear streaming state
+        streamingTextRef.current = ''
+        setStreamingText('')
+        setLoading(false)
+        intermediateStartRef.current = -1
+
+        // Clear intermediate messages from localStorage (keep showing in UI)
+        const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
+        if (completedSessionId) {
+          clearIntermediateMessages(completedSessionId)
+        }
+
+        if (p.result) {
+          // Replace any partially-streamed message with the final complete result
+          setMessages((prev) => {
+            // Remove trailing non-tool assistant message if it was from streaming
+            const cleaned = [...prev]
+            const last = cleaned[cleaned.length - 1]
+            if (last && last.role === 'assistant' && !last.toolCall) {
+              cleaned.pop()
+            }
+            return [
+              ...cleaned,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant' as const,
+                content: String(p.result),
+                timestamp: Date.now(),
+              },
+            ]
+          })
+        }
+        if (p.error && !p.result) {
+          setMessages((prev) => [
             ...prev,
             {
               id: crypto.randomUUID(),
               role: 'assistant' as const,
-              content: `Using ${toolName}`,
-              timestamp: Date.now(),
-              toolCall: toolName,
-            },
-          ]
-          persistIntermediate(updated, selectedId || (payload.sessionId as string))
-          return updated
-        })
-      } else if (deltaType === 'tool_result') {
-        setMessages((prev) => {
-          const updated = [...prev]
-          const last = updated[updated.length - 1]
-          if (last && last.role === 'assistant' && last.toolCall) {
-            updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
-          }
-          persistIntermediate(updated, selectedId || (payload.sessionId as string))
-          return updated
-        })
-      }
-    }
-
-    if (latest.event === 'session:notification') {
-      // Internal notification (e.g. child session completed) — display as a system notification
-      const notifMessage = String(payload.message || '')
-      if (notifMessage) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'notification' as const,
-            content: notifMessage,
-            timestamp: Date.now(),
-          },
-        ])
-      }
-    }
-
-    if (latest.event === 'session:interrupted') {
-      // Engine was interrupted — clear streaming, wait for new turn
-      streamingTextRef.current = ''
-      setStreamingText('')
-    }
-
-    if (latest.event === 'session:stopped') {
-      if ((latest.payload as Record<string, unknown>)?.sessionId === selectedId) {
-        setLoading(false)
-        setStreamingText('')
-      }
-    }
-
-    if (latest.event === 'session:completed') {
-      // Clear streaming state
-      streamingTextRef.current = ''
-      setStreamingText('')
-      setLoading(false)
-      intermediateStartRef.current = -1
-
-      // Clear intermediate messages from localStorage (keep showing in UI)
-      const completedSessionId = selectedId || (payload.sessionId ? String(payload.sessionId) : null)
-      if (completedSessionId) {
-        clearIntermediateMessages(completedSessionId)
-      }
-
-      if (payload.result) {
-        // Replace any partially-streamed message with the final complete result
-        setMessages((prev) => {
-          // Remove trailing non-tool assistant message if it was from streaming
-          const cleaned = [...prev]
-          const last = cleaned[cleaned.length - 1]
-          if (last && last.role === 'assistant' && !last.toolCall) {
-            cleaned.pop()
-          }
-          return [
-            ...cleaned,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: String(payload.result),
+              content: `Error: ${p.error}`,
               timestamp: Date.now(),
             },
-          ]
-        })
+          ])
+        }
+        setRefreshKey((k) => k + 1)
       }
-      if (payload.error && !payload.result) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant' as const,
-            content: `Error: ${payload.error}`,
-            timestamp: Date.now(),
-          },
-        ])
-      }
-      setRefreshKey((k) => k + 1)
-    }
-  }, [events, selectedId, persistIntermediate])
+    })
+  }, [subscribe, persistIntermediate])
 
   const loadSession = useCallback(async (id: string) => {
     try {
