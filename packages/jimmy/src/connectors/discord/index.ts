@@ -26,6 +26,8 @@ export interface DiscordConnectorConfig {
   guildId?: string;
   /** Only respond to messages in this channel (right-click channel → Copy Channel ID) */
   channelId?: string;
+  /** Route messages from specific channels to remote Jinn instances */
+  channelRouting?: Record<string, string>;
 }
 
 export class DiscordConnector implements Connector {
@@ -224,6 +226,13 @@ export class DiscordConnector implements Connector {
     // Guild restriction
     if (this.config.guildId && message.guild?.id !== this.config.guildId) return;
 
+    // Channel routing — proxy messages to remote instances
+    const routeTarget = this.config.channelRouting?.[message.channel.id];
+    if (routeTarget) {
+      await this.proxyToRemote(routeTarget, message);
+      return;
+    }
+
     // Channel restriction — only respond in a specific channel (+ DMs always allowed)
     if (this.config.channelId && message.channel.id !== this.config.channelId && !message.channel.isDMBased()) return;
 
@@ -275,5 +284,46 @@ export class DiscordConnector implements Connector {
     };
 
     this.handler(incomingMessage);
+  }
+
+  private async proxyToRemote(remoteUrl: string, message: Message): Promise<void> {
+    try {
+      const attachments = Array.from(message.attachments.values()).map((att) => ({
+        name: att.name,
+        url: att.url,
+        mimeType: att.contentType ?? "application/octet-stream",
+      }));
+
+      const payload = {
+        sessionKey: deriveSessionKey(message),
+        channel: message.channel.id,
+        thread: message.channel.isThread() ? message.channel.id : undefined,
+        user: message.author.username,
+        userId: message.author.id,
+        text: message.content,
+        messageId: message.id,
+        attachments,
+        replyContext: buildReplyContext(message),
+        transportMeta: {
+          channelName: message.channel.isTextBased() && "name" in message.channel
+            ? (message.channel as TextChannel).name
+            : "dm",
+          guildId: message.guild?.id ?? null,
+          isDM: message.channel.isDMBased(),
+        },
+      };
+
+      const res = await fetch(`${remoteUrl.replace(/\/+$/, "")}/api/connectors/discord/incoming`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        logger.error(`Failed to proxy Discord message to ${remoteUrl}: ${res.status} ${res.statusText}`);
+      }
+    } catch (err) {
+      logger.error(`Discord proxy error to ${remoteUrl}: ${err instanceof Error ? err.message : err}`);
+    }
   }
 }

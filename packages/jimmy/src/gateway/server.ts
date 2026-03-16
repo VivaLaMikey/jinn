@@ -18,6 +18,7 @@ import { initStt } from "../stt/stt.js";
 import { startWatchers, stopWatchers, syncSkillSymlinks } from "./watcher.js";
 import { SlackConnector } from "../connectors/slack/index.js";
 import { DiscordConnector } from "../connectors/discord/index.js";
+import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
@@ -138,7 +139,7 @@ export async function startGateway(
   if (config.connectors?.slack?.appToken && config.connectors?.slack?.botToken) {
     connectorNames.push("slack");
   }
-  if (config.connectors?.discord?.botToken) {
+  if (config.connectors?.discord?.botToken || config.connectors?.discord?.proxyVia) {
     connectorNames.push("discord");
   }
   if (config.connectors?.whatsapp) {
@@ -179,7 +180,7 @@ export async function startGateway(
 
   if (config.connectors?.discord?.botToken) {
     try {
-      const discord = new DiscordConnector(config.connectors.discord);
+      const discord = new DiscordConnector(config.connectors.discord as import("../connectors/discord/index.js").DiscordConnectorConfig);
       discord.onMessage((msg) => {
         sessionManager.route(msg, discord).catch((err) => {
           logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
@@ -191,6 +192,21 @@ export async function startGateway(
       logger.info("Discord connector started");
     } catch (err) {
       logger.error(`Failed to start Discord connector: ${err instanceof Error ? err.message : err}`);
+    }
+  } else if (config.connectors?.discord?.proxyVia) {
+    try {
+      const discord = new RemoteDiscordConnector({ proxyVia: config.connectors.discord.proxyVia });
+      discord.onMessage((msg) => {
+        sessionManager.route(msg, discord).catch((err) => {
+          logger.error(`Discord (remote) route error: ${err instanceof Error ? err.message : err}`);
+        });
+      });
+      await discord.start();
+      connectors.push(discord);
+      connectorMap.set("discord", discord);
+      logger.info(`Discord connector started in remote mode (via ${config.connectors.discord.proxyVia})`);
+    } catch (err) {
+      logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 
