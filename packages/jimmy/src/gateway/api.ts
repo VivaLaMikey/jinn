@@ -139,6 +139,20 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    const sv = source[key];
+    const tv = target[key];
+    if (sv && typeof sv === "object" && !Array.isArray(sv) && tv && typeof tv === "object" && !Array.isArray(tv)) {
+      result[key] = deepMerge(tv as Record<string, unknown>, sv as Record<string, unknown>);
+    } else {
+      result[key] = sv;
+    }
+  }
+  return result;
+}
+
 function matchRoute(
   pattern: string,
   pathname: string,
@@ -936,7 +950,14 @@ export async function handleApiRequest(
       if (body.engines !== undefined && (typeof body.engines !== "object" || Array.isArray(body.engines))) {
         return badRequest(res, "engines must be an object");
       }
-      const yamlStr = yaml.dump(body);
+      // Deep-merge incoming config with existing config to preserve
+      // fields not included in the update (e.g. connector tokens).
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
+      } catch { /* start fresh if unreadable */ }
+      const merged = deepMerge(existing, body);
+      const yamlStr = yaml.dump(merged);
       fs.writeFileSync(CONFIG_PATH, yamlStr);
       logger.info("Config updated via API");
       return json(res, { status: "ok" });
