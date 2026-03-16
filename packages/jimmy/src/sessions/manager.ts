@@ -22,6 +22,8 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
@@ -102,6 +104,17 @@ export class SessionManager {
       .map((attachment) => attachment.localPath)
       .filter((filePath): filePath is string => !!filePath);
 
+    if (session.status === "waiting") {
+      const expectedResetAt = getClaudeExpectedResetAt();
+      const resumeText = expectedResetAt
+        ? expectedResetAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+        : null;
+      await connector.replyMessage(
+        target,
+        `⏳ Still paused due to Claude usage limit${resumeText ? ` (resets ${resumeText})` : ""}. I queued this message and will respond automatically.`,
+      ).catch(() => {});
+    }
+
     if (session.status === "running" && this.queue.isRunning(msg.sessionKey) && connector.getCapabilities().reactions) {
       await connector.addReaction(target, "clock1").catch(() => {});
     }
@@ -181,124 +194,230 @@ export class SessionManager {
 
       const effortLevel = resolveEffort(engineConfig, session, employee);
 
-      let result: Awaited<ReturnType<Engine["run"]>>;
-      try {
-        result = await engine.run({
-          prompt: msg.text,
-          resumeSessionId: session.engineSessionId ?? undefined,
-          systemPrompt,
-          cwd: JINN_HOME,
-          bin: engineConfig.bin,
-          model: session.model ?? engineConfig.model,
-          effortLevel,
-          cliFlags: employee?.cliFlags,
-          mcpConfigPath,
-          attachments: attachments.length > 0 ? attachments : undefined,
-          sessionId: session.id,
-        });
-      } finally {
-        // Clean up temp attachment files downloaded from Slack
-        for (const filePath of attachments) {
-          try {
-            fs.rmSync(filePath, { force: true });
-          } catch {
-            // Ignore cleanup errors — best effort
-          }
+      // Heuristic preflight warning: Claude usage limits don't expose a precise "remaining" budget.
+      // If we've hit the limit recently and this looks like a heavy turn, warn before we spend time.
+      if (decorateMessages && session.engine === "claude" && isLikelyNearClaudeUsageLimit()) {
+        const modelName = (session.model ?? engineConfig.model ?? "").toLowerCase();
+        const heavyEffort = ["high", "xhigh", "max"].includes((effortLevel || "").toLowerCase());
+        const heavyModel = modelName.includes("opus");
+        const looksBig = attachments.length > 0 || msg.text.length > 6000;
+        if ((heavyEffort || heavyModel) && looksBig) {
+          const expectedResetAt = getClaudeExpectedResetAt();
+          const resumeText = expectedResetAt
+            ? expectedResetAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+            : null;
+          await connector.replyMessage(
+            target,
+            `⚠️ Heads up: Claude usage limits were hit recently, and this looks like a bigger task. If you're near the limit, it may pause${resumeText ? ` until ~${resumeText}` : ""}.`,
+          ).catch(() => {});
         }
       }
+
+      const result = await engine.run({
+        prompt: msg.text,
+        resumeSessionId: session.engineSessionId ?? undefined,
+        systemPrompt,
+        cwd: JINN_HOME,
+        bin: engineConfig.bin,
+        model: session.model ?? engineConfig.model,
+        effortLevel,
+        cliFlags: employee?.cliFlags,
+        mcpConfigPath,
+        attachments: attachments.length > 0 ? attachments : undefined,
+        sessionId: session.id,
+      });
 
       const wasInterrupted = result.error?.startsWith("Interrupted");
 
       // Detect rate limit / usage limit errors and auto-retry
-      const isRateLimited = !wasInterrupted && result.error && /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(result.error);
+      const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
+      if (rateLimit.limited) {
+        recordClaudeRateLimit(rateLimit.resetsAt);
+        const waitEmoji = "hourglass_flowing_sand";
 
-      if (isRateLimited) {
-        logger.info(`Session ${session.id} hit rate limit — will auto-retry in 60s`);
-        if (mcpConfigPath) cleanupMcpConfigFile(session.id);
+        const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
+        const deadlineMs = computeRateLimitDeadlineMs(
+          rateLimit.resetsAt,
+          rateLimit.resetsAt ? 30 * 60_000 : 6 * 60 * 60_000,
+        );
+
+        const resumeText = resumeAt
+          ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+          : null;
+
+        logger.info(
+          `Session ${session.id} hit Claude usage limit — will auto-retry ${resumeAt ? `at ${resumeAt.toISOString()}` : `in ${Math.round(delayMs / 1000)}s`}`,
+        );
 
         // Send hardcoded Discord notification — does not depend on LLM
-        notifyDiscordChannel(`⚠️ Rate limit hit. Session ${session.id}${session.employee ? ` (${session.employee})` : ''} has been paused and will auto-resume when the limit resets.`);
+        notifyDiscordChannel(
+          `⚠️ Claude usage limit reached. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
+        );
 
-        updateSession(session.id, {
+        // Clear "thinking" UI and show waiting state
+        if (decorateMessages && connector.setTypingStatus) {
+          await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+        }
+        if (decorateMessages && capabilities.reactions) {
+          await connector.removeReaction(target, "eyes").catch(() => {});
+          await connector.addReaction(target, waitEmoji).catch(() => {});
+        }
+
+        const waitingSession = updateSession(session.id, {
+          ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
           status: "waiting",
           lastActivity: new Date().toISOString(),
-          lastError: "Rate limited — waiting for usage reset",
-        });
+          lastError: resumeAt
+            ? `Claude usage limit — resumes ${resumeAt.toISOString()}`
+            : "Claude usage limit — waiting for reset",
+        }) ?? session;
 
-        notifyRateLimited(session);
+        notifyRateLimited(
+          waitingSession,
+          resumeAt
+            ? resumeAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+            : undefined,
+        );
 
-        await connector.replyMessage(target, "⏳ Usage limit reached. Waiting for reset — I'll continue automatically.").catch(() => {});
+        await connector.replyMessage(
+          target,
+          `⏳ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`,
+        ).catch(() => {});
 
-        // Poll every 60s, retry up to 30 times (30 min)
-        const maxRetries = 30;
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-          await new Promise(r => setTimeout(r, 60_000));
+        // Keep lastActivity fresh while waiting (UI / status endpoints)
+        const heartbeat = setInterval(() => {
+          updateSession(session.id, { status: "waiting", lastActivity: new Date().toISOString() });
+        }, 60_000);
 
-          // Check if session was stopped while waiting
-          const currentSession = getSessionBySessionKey(msg.sessionKey);
-          if (!currentSession || currentSession.status === "error") {
-            logger.info(`Session ${session.id} stopped while waiting for rate limit reset`);
+        try {
+          let attempt = 0;
+          let nextDelayMs = delayMs;
+
+          while (Date.now() < deadlineMs) {
+            await new Promise(r => setTimeout(r, nextDelayMs));
+            attempt++;
+
+            // Check if session was stopped while waiting
+            const currentSession = getSessionBySessionKey(msg.sessionKey);
+            if (!currentSession || currentSession.status === "error") {
+              logger.info(`Session ${session.id} stopped while waiting for usage reset`);
+              return;
+            }
+
+            // Show active processing again
+            if (decorateMessages && connector.setTypingStatus) {
+              await connector.setTypingStatus(target.channel, threadTs, "is thinking...").catch(() => {});
+            }
+            if (decorateMessages && capabilities.reactions) {
+              await connector.removeReaction(target, waitEmoji).catch(() => {});
+              await connector.addReaction(target, "eyes").catch(() => {});
+            }
+
+            logger.info(`Session ${session.id} retrying after usage limit (attempt ${attempt})`);
+            const retryResult = await engine.run({
+              prompt: msg.text,
+              resumeSessionId: currentSession.engineSessionId ?? undefined,
+              systemPrompt,
+              cwd: JINN_HOME,
+              bin: engineConfig.bin,
+              model: currentSession.model ?? engineConfig.model,
+              effortLevel,
+              cliFlags: employee?.cliFlags,
+              mcpConfigPath,
+              attachments: attachments.length > 0 ? attachments : undefined,
+              sessionId: session.id,
+            });
+
+            const retryInterrupted = retryResult.error?.startsWith("Interrupted");
+            const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
+            if (retryRateLimit.limited) {
+              recordClaudeRateLimit(retryRateLimit.resetsAt);
+              logger.info(`Session ${session.id} still rate limited (attempt ${attempt})`);
+
+              const next = computeNextRetryDelayMs(retryRateLimit.resetsAt);
+              nextDelayMs = next.delayMs;
+
+              // Return to waiting UI state
+              if (decorateMessages && connector.setTypingStatus) {
+                await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+              }
+              if (decorateMessages && capabilities.reactions) {
+                await connector.removeReaction(target, "eyes").catch(() => {});
+                await connector.addReaction(target, waitEmoji).catch(() => {});
+              }
+
+              updateSession(session.id, {
+                ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+                status: "waiting",
+                lastActivity: new Date().toISOString(),
+                lastError: next.resumeAt
+                  ? `Claude usage limit — resumes ${next.resumeAt.toISOString()}`
+                  : "Claude usage limit — waiting for reset",
+              });
+
+              continue;
+            }
+
+            // Success or different error — handle normally
+            const retryText = retryResult.result?.trim()
+              ? retryResult.result
+              : retryResult.error || "(No response from engine)";
+
+            insertMessage(session.id, "assistant", retryText);
+            if (retryResult.cost || retryResult.numTurns) {
+              accumulateSessionCost(session.id, retryResult.cost ?? 0, retryResult.numTurns ?? 1);
+            }
+
+            // Clear typing indicator & reactions
+            if (decorateMessages && connector.setTypingStatus) {
+              await connector.setTypingStatus(target.channel, threadTs, "").catch(() => {});
+            }
+            if (decorateMessages && capabilities.reactions) {
+              await connector.removeReaction(target, "eyes").catch(() => {});
+              await connector.removeReaction(target, waitEmoji).catch(() => {});
+            }
+
+            await connector.replyMessage(target, retryText).catch(() => {});
+            const retryUpdated = updateSession(session.id, {
+              ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+              status: retryResult.error ? "error" : "idle",
+              replyContext: msg.replyContext,
+              messageId: msg.messageId ?? null,
+              transportMeta: msg.transportMeta ?? null,
+              lastActivity: new Date().toISOString(),
+              lastError: retryResult.error ?? null,
+            });
+            if (retryUpdated) {
+              notifyRateLimitResumed(retryUpdated);
+              notifyDiscordChannel(
+                `✅ Claude usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
+              );
+              notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+            }
+            logger.info(`Session ${session.id} resumed after usage reset`);
             return;
           }
 
-          logger.info(`Session ${session.id} retrying after rate limit (attempt ${attempt}/${maxRetries})`);
-          const retryResult = await engine.run({
-            prompt: msg.text,
-            resumeSessionId: session.engineSessionId ?? undefined,
-            systemPrompt,
-            cwd: JINN_HOME,
-            bin: engineConfig.bin,
-            model: session.model ?? engineConfig.model,
-            effortLevel,
-            cliFlags: employee?.cliFlags,
-            mcpConfigPath: undefined,
-            attachments: attachments.length > 0 ? attachments : undefined,
-            sessionId: session.id,
-          });
-
-          const stillLimited = retryResult.error && /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(retryResult.error);
-          if (stillLimited) {
-            logger.info(`Session ${session.id} still rate limited (attempt ${attempt})`);
-            continue;
-          }
-
-          // Success or different error — handle normally
-          const retryText = retryResult.result?.trim()
-            ? retryResult.result
-            : retryResult.error || "(No response from engine)";
-
-          insertMessage(session.id, "assistant", retryText);
-          if (retryResult.cost || retryResult.numTurns) {
-            accumulateSessionCost(session.id, retryResult.cost ?? 0, retryResult.numTurns ?? 1);
-          }
-          await connector.replyMessage(target, retryText).catch(() => {});
-          const retryUpdated = updateSession(session.id, {
-            engineSessionId: retryResult.sessionId,
-            status: retryResult.error ? "error" : "idle",
-            replyContext: msg.replyContext,
-            messageId: msg.messageId ?? null,
-            transportMeta: msg.transportMeta ?? null,
+          // Exhausted waiting window
+          notifyDiscordChannel(
+            `❌ Claude usage limit did not clear in time. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} has been stopped.`,
+          );
+          await connector.replyMessage(target, "Usage limit didn't reset in time. Please try again later.").catch(() => {});
+          updateSession(session.id, {
+            status: "error",
             lastActivity: new Date().toISOString(),
-            lastError: retryResult.error ?? null,
+            lastError: "Claude usage limit did not clear in time",
           });
-          if (retryUpdated) {
-            notifyRateLimitResumed(retryUpdated);
-            notifyDiscordChannel(`✅ Rate limit reset. Session ${session.id}${session.employee ? ` (${session.employee})` : ''} resuming.`);
-            notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
-          }
-          logger.info(`Session ${session.id} resumed after rate limit reset`);
-          return;
-        }
 
-        // Exhausted retries
-        notifyDiscordChannel(`❌ Rate limit did not reset within 30 minutes. Session ${session.id}${session.employee ? ` (${session.employee})` : ''} has been stopped.`);
-        await connector.replyMessage(target, "Usage limit didn't reset within 30 minutes. Please try again later.").catch(() => {});
-        updateSession(session.id, {
-          status: "error",
-          lastActivity: new Date().toISOString(),
-          lastError: "Rate limit did not reset within 30 minutes",
-        });
-        return;
+          // Clear reactions on failure
+          if (decorateMessages && capabilities.reactions) {
+            await connector.removeReaction(target, "eyes").catch(() => {});
+            await connector.removeReaction(target, waitEmoji).catch(() => {});
+          }
+          return;
+        } finally {
+          clearInterval(heartbeat);
+        }
       }
 
       const responseText = result.result?.trim()
@@ -306,7 +425,6 @@ export class SessionManager {
         : result.error || "(No response from engine)";
 
       insertMessage(session.id, "assistant", responseText);
-      if (mcpConfigPath) cleanupMcpConfigFile(session.id);
       if (result.cost || result.numTurns) {
         accumulateSessionCost(session.id, result.cost ?? 0, result.numTurns ?? 1);
       }
@@ -320,7 +438,7 @@ export class SessionManager {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
       const updatedSession = updateSession(session.id, {
-        engineSessionId: result.sessionId,
+        ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
         status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,
@@ -340,9 +458,6 @@ export class SessionManager {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error(`Session ${session.id} error: ${errMsg}`);
 
-      // Clean up temp MCP config on error
-      if (mcpConfigPath) cleanupMcpConfigFile(session.id);
-
       const erroredSession = updateSession(session.id, {
         status: "error",
         lastActivity: new Date().toISOString(),
@@ -361,7 +476,19 @@ export class SessionManager {
 
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
+        await connector.removeReaction(target, "hourglass_flowing_sand").catch(() => {});
       }
+    } finally {
+      // Clean up temp attachment files downloaded from Slack
+      for (const filePath of attachments) {
+        try {
+          fs.rmSync(filePath, { force: true });
+        } catch {
+          // Ignore cleanup errors — best effort
+        }
+      }
+
+      if (mcpConfigPath) cleanupMcpConfigFile(session.id);
     }
   }
 

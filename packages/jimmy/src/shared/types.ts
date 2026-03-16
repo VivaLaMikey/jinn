@@ -50,6 +50,20 @@ export interface EngineResult {
   durationMs?: number;
   numTurns?: number;
   error?: string;
+  /**
+   * Optional rate limit metadata returned by an engine.
+   * `resetsAt` is a Unix timestamp in seconds.
+   */
+  rateLimit?: EngineRateLimitInfo;
+}
+
+export interface EngineRateLimitInfo {
+  status?: string;
+  resetsAt?: number;
+  rateLimitType?: string;
+  overageStatus?: string;
+  overageDisabledReason?: string;
+  isUsingOverage?: boolean;
 }
 
 export type JsonPrimitive = string | number | boolean | null;

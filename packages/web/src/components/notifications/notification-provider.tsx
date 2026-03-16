@@ -58,14 +58,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       setNotifications((prev) => [notif, ...prev].slice(0, 50));
       initialized.current = true;
 
-      // Show toast
-      setToasts((prev) => [...prev, notif]);
-      const timer = setTimeout(() => {
-        setToasts((prev) => prev.filter((t) => t.id !== notif.id));
-        toastTimers.current.delete(notif.id);
-      }, TOAST_DURATION_MS);
-      toastTimers.current.set(notif.id, timer);
-
     },
     [],
   );

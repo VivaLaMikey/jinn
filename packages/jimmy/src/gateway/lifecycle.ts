@@ -39,11 +39,6 @@ export function startDaemon(config: JinnConfig): void {
   const __filename = fileURLToPath(import.meta.url);
   const entryScript = path.resolve(
     path.dirname(__filename),
-    "..",
-    "..",
-    "dist",
-    "src",
-    "gateway",
     "daemon-entry.js",
   );
 

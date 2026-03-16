@@ -58,9 +58,11 @@ function ChatPage() {
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const [viewMode, setViewMode] = useState<'chat' | 'cli'>('chat')
   const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
+  const sessionPickerRef = useRef<HTMLDivElement>(null)
   const { events, connectionSeq, skillsVersion } = useGateway()
   const searchParams = useSearchParams()
   const onboardingTriggered = useRef(false)
@@ -69,15 +71,18 @@ function ChatPage() {
 
   // Close more menu on outside click
   useEffect(() => {
-    if (!showMoreMenu) return
+    if (!showMoreMenu && !showSessionPicker) return
     function handleClick(e: MouseEvent) {
-      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+      if (showMoreMenu && moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
         setShowMoreMenu(false)
+      }
+      if (showSessionPicker && sessionPickerRef.current && !sessionPickerRef.current.contains(e.target as Node)) {
+        setShowSessionPicker(false)
       }
     }
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
-  }, [showMoreMenu])
+  }, [showMoreMenu, showSessionPicker])
 
   const copyToClipboard = useCallback((text: string, field: string) => {
     navigator.clipboard.writeText(text)
@@ -636,81 +641,194 @@ function ChatPage() {
               </div>
             </div>
 
-            {/* Session picker — shown when the selected employee has multiple sessions */}
-            {selectedId && employeeSessions.length > 1 && (() => {
+            {/* Session picker — dropdown + new session button */}
+            {selectedId && employeeSessions.length >= 1 && (() => {
               const currentIndex = employeeSessions.findIndex(s => s.id === selectedId)
               const total = employeeSessions.length
               const canPrev = currentIndex < total - 1
               const canNext = currentIndex > 0
               return (
-                <div style={{
+                <div ref={sessionPickerRef} style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 2,
+                  gap: 4,
                   marginRight: 'var(--space-2)',
-                  background: 'var(--fill-tertiary)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '2px 4px',
                   flexShrink: 0,
+                  position: 'relative',
                 }}>
-                  <button
-                    onClick={() => {
-                      if (canPrev) {
-                        const prev = employeeSessions[currentIndex + 1]
-                        handleSelect(prev.id)
-                      }
-                    }}
-                    disabled={!canPrev}
-                    aria-label="Older session"
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: canPrev ? 'pointer' : 'default',
-                      padding: '2px 4px',
-                      color: canPrev ? 'var(--text-secondary)' : 'var(--text-quaternary)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      borderRadius: 'var(--radius-sm)',
-                    }}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="15 18 9 12 15 6" />
-                    </svg>
-                  </button>
-                  <span style={{
-                    fontSize: 'var(--text-caption2)',
-                    color: 'var(--text-secondary)',
-                    whiteSpace: 'nowrap',
-                    padding: '0 2px',
-                    minWidth: 40,
-                    textAlign: 'center',
+                  {/* Prev/counter/next */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    background: 'var(--fill-tertiary)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '2px 4px',
                   }}>
-                    {currentIndex + 1} / {total}
-                  </span>
+                    <button
+                      onClick={() => {
+                        if (canPrev) {
+                          const prev = employeeSessions[currentIndex + 1]
+                          handleSelect(prev.id)
+                        }
+                      }}
+                      disabled={!canPrev}
+                      aria-label="Older session"
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: canPrev ? 'pointer' : 'default',
+                        padding: '2px 4px',
+                        color: canPrev ? 'var(--text-secondary)' : 'var(--text-quaternary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        borderRadius: 'var(--radius-sm)',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => setShowSessionPicker(v => !v)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: 'var(--text-caption2)',
+                        color: 'var(--text-secondary)',
+                        whiteSpace: 'nowrap',
+                        padding: '0 2px',
+                        minWidth: 40,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {currentIndex + 1} / {total} ▾
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (canNext) {
+                          const next = employeeSessions[currentIndex - 1]
+                          handleSelect(next.id)
+                        }
+                      }}
+                      disabled={!canNext}
+                      aria-label="Newer session"
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: canNext ? 'pointer' : 'default',
+                        padding: '2px 4px',
+                        color: canNext ? 'var(--text-secondary)' : 'var(--text-quaternary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        borderRadius: 'var(--radius-sm)',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* New session button */}
                   <button
                     onClick={() => {
-                      if (canNext) {
-                        const next = employeeSessions[currentIndex - 1]
-                        handleSelect(next.id)
-                      }
+                      setShowSessionPicker(false)
+                      handleNewChat()
                     }}
-                    disabled={!canNext}
-                    aria-label="Newer session"
+                    aria-label="New session"
+                    title="New session"
                     style={{
-                      background: 'transparent',
+                      background: 'var(--fill-tertiary)',
                       border: 'none',
-                      cursor: canNext ? 'pointer' : 'default',
-                      padding: '2px 4px',
-                      color: canNext ? 'var(--text-secondary)' : 'var(--text-quaternary)',
+                      cursor: 'pointer',
+                      padding: '4px 8px',
+                      borderRadius: 'var(--radius-sm)',
+                      color: 'var(--text-secondary)',
                       display: 'flex',
                       alignItems: 'center',
-                      borderRadius: 'var(--radius-sm)',
+                      fontSize: 'var(--text-caption2)',
+                      fontWeight: 'var(--weight-medium)',
+                      gap: 3,
+                      transition: 'color 150ms ease',
                     }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="9 18 15 12 9 6" />
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
                     </svg>
+                    New
                   </button>
+
+                  {/* Session dropdown */}
+                  {showSessionPicker && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      marginTop: 4,
+                      background: 'var(--material-thick)',
+                      border: '1px solid var(--separator)',
+                      borderRadius: 'var(--radius-md, 12px)',
+                      boxShadow: 'var(--shadow-overlay)',
+                      minWidth: 280,
+                      maxHeight: 300,
+                      overflowY: 'auto',
+                      zIndex: 100,
+                      padding: 'var(--space-1)',
+                    }}>
+                      {employeeSessions.map((s, i) => {
+                        const isSelected = s.id === selectedId
+                        const title = (s as Record<string, unknown>).title as string || `Session ${i + 1}`
+                        const time = s.lastActivity || s.createdAt || ''
+                        const timeLabel = time ? new Date(time).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''
+                        return (
+                          <button
+                            key={s.id}
+                            onClick={() => {
+                              handleSelect(s.id)
+                              setShowSessionPicker(false)
+                            }}
+                            style={{
+                              width: '100%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 'var(--space-2)',
+                              padding: 'var(--space-2) var(--space-3)',
+                              background: isSelected ? 'var(--fill-secondary)' : 'transparent',
+                              border: 'none',
+                              borderRadius: 'var(--radius-sm)',
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                            }}
+                          >
+                            <span style={{
+                              fontSize: 'var(--text-caption1)',
+                              color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
+                              fontWeight: isSelected ? 'var(--weight-semibold)' : 'var(--weight-regular)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              flex: 1,
+                            }}>
+                              {title}
+                            </span>
+                            <span style={{
+                              fontSize: 'var(--text-caption2)',
+                              color: 'var(--text-quaternary)',
+                              flexShrink: 0,
+                            }}>
+                              {timeLabel}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )
             })()}

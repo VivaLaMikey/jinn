@@ -1,4 +1,5 @@
 import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
+import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -34,6 +35,8 @@ import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
@@ -41,6 +44,7 @@ import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
+import { loadInstances } from "../cli/instances.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -165,6 +169,18 @@ function serializeSession(session: Session, context: ApiContext): Session {
   };
 }
 
+function checkInstanceHealth(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.request({ hostname: "localhost", port, path: "/api/status", timeout: 2000 }, (res) => {
+      resolve(res.statusCode === 200);
+      res.resume();
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
+
 export async function handleApiRequest(
   req: HttpRequest,
   res: ServerResponse,
@@ -195,6 +211,21 @@ export async function handleApiRequest(
         sessions: { total: sessions.length, running, active: running },
         connectors,
       });
+    }
+
+    // GET /api/instances
+    if (method === "GET" && pathname === "/api/instances") {
+      const instances = loadInstances();
+      const currentPort = context.getConfig().gateway.port || 7777;
+      const results = await Promise.all(
+        instances.map(async (inst) => ({
+          name: inst.name,
+          port: inst.port,
+          running: inst.port === currentPort ? true : await checkInstanceHealth(inst.port),
+          current: inst.port === currentPort,
+        }))
+      );
+      return json(res, results);
     }
 
     // GET /api/sessions
@@ -472,6 +503,17 @@ export async function handleApiRequest(
       // Emit notification event for UI display (renders as system banner, not user bubble)
       if (isNotification) {
         context.emit("session:notification", { sessionId: session.id, message: prompt });
+      }
+
+      if (!isNotification && session.status === "waiting") {
+        const expectedResetAt = getClaudeExpectedResetAt();
+        const resumeText = expectedResetAt
+          ? expectedResetAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+          : null;
+        const queuedText =
+          `⏳ Still paused due to Claude usage limit${resumeText ? ` (resets ${resumeText})` : ""}. Your message is queued and will run automatically.`;
+        insertMessage(session.id, "notification", queuedText);
+        context.emit("session:notification", { sessionId: session.id, message: queuedText });
       }
 
       // If a turn is already running, check whether we should interrupt or queue.
@@ -861,7 +903,23 @@ export async function handleApiRequest(
         return badRequest(res, "Config must be a JSON object");
       }
       // Validate known top-level keys
-      const KNOWN_KEYS = ["gateway", "engines", "connectors", "mcp", "portal", "stt", "skills", "sessions"];
+      // Keep this aligned with `JinnConfig` in src/shared/types.ts
+      const KNOWN_KEYS = [
+        "jinn",
+        "gateway",
+        "engines",
+        "connectors",
+        "logging",
+        "mcp",
+        "sessions",
+        "cron",
+        "notifications",
+        "portal",
+        "context",
+        "stt",
+        "skills",
+        "remotes",
+      ];
       const unknownKeys = Object.keys(body).filter((k) => !KNOWN_KEYS.includes(k));
       if (unknownKeys.length > 0) {
         return badRequest(res, `Unknown config keys: ${unknownKeys.join(", ")}`);
@@ -1440,127 +1498,179 @@ async function runWebSession(
       return;
     }
 
-    // Detect rate limit / usage limit errors and auto-retry
-    const isRateLimited = result.error &&
-      /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(result.error);
+    const wasInterrupted = result.error?.startsWith("Interrupted");
+    const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
 
-    if (isRateLimited) {
-      logger.info(`Web session ${currentSession.id} hit rate limit — will auto-retry in 60s`);
+    if (rateLimit.limited) {
+      recordClaudeRateLimit(rateLimit.resetsAt);
+      const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
+      const deadlineMs = computeRateLimitDeadlineMs(
+        rateLimit.resetsAt,
+        rateLimit.resetsAt ? 30 * 60_000 : 6 * 60 * 60_000,
+      );
 
-      // Send hardcoded Discord notification — does not depend on LLM
-      notifyDiscordChannel(`⚠️ Rate limit hit. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ''} has been paused and will auto-resume when the limit resets.`);
+      const resumeText = resumeAt
+        ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+        : null;
 
-      updateSession(currentSession.id, {
+      logger.info(
+        `Web session ${currentSession.id} hit Claude usage limit — will auto-retry ${resumeAt ? `at ${resumeAt.toISOString()}` : `in ${Math.round(delayMs / 1000)}s`}`,
+      );
+
+      // Send hardcoded Discord notification — does not depend on the LLM
+      notifyDiscordChannel(
+        `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
+      );
+
+      const notificationText =
+        `⏳ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`;
+      insertMessage(currentSession.id, "notification", notificationText);
+      context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
+
+      const waitingSession = updateSession(currentSession.id, {
+        ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
         status: "waiting",
         lastActivity: new Date().toISOString(),
-        lastError: "Rate limited — waiting for usage reset",
+        lastError: resumeAt
+          ? `Claude usage limit — resumes ${resumeAt.toISOString()}`
+          : "Claude usage limit — waiting for reset",
       });
 
       // Notify parent session about rate limit (fire-and-forget)
-      const now = new Date();
-      const estimatedResume = new Date(now.getTime() + 60_000);
       notifyRateLimited(
-        { ...currentSession, status: "waiting" } as Session,
-        estimatedResume.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+        (waitingSession ?? { ...currentSession, status: "waiting" }) as Session,
+        resumeAt
+          ? resumeAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+          : undefined,
       );
 
       context.emit("session:rate-limited", {
         sessionId: currentSession.id,
         employee: currentSession.employee,
         error: result.error,
+        resetsAt: rateLimit.resetsAt ?? null,
       });
 
-      // Poll every 60s, retry up to 30 times (30 min)
-      const MAX_RATE_LIMIT_RETRIES = 30;
-      for (let retryAttempt = 0; retryAttempt < MAX_RATE_LIMIT_RETRIES; retryAttempt++) {
-        await new Promise<void>((r) => setTimeout(r, 60_000));
+      // Keep lastActivity fresh while waiting (UI / status endpoints)
+      const heartbeat = setInterval(() => {
+        updateSession(currentSession.id, { status: "waiting", lastActivity: new Date().toISOString() });
+      }, 60_000);
 
-        // Check session still exists and hasn't been cancelled
-        const current = getSession(currentSession.id);
-        if (!current || current.status === "error") {
-          logger.info(`Web session ${currentSession.id} stopped while waiting for rate limit reset`);
+      try {
+        let attempt = 0;
+        let nextDelayMs = delayMs;
+
+        while (Date.now() < deadlineMs) {
+          await new Promise<void>((r) => setTimeout(r, nextDelayMs));
+          attempt++;
+
+          // Check session still exists and hasn't been cancelled
+          const current = getSession(currentSession.id);
+          if (!current || current.status === "error") {
+            logger.info(`Web session ${currentSession.id} stopped while waiting for usage reset`);
+            return;
+          }
+
+          logger.info(`Web session ${currentSession.id} retrying after usage limit (attempt ${attempt})`);
+
+          const retryResult = await engine.run({
+            prompt,
+            resumeSessionId: current.engineSessionId ?? undefined,
+            systemPrompt,
+            cwd: JINN_HOME,
+            bin: engineConfig.bin,
+            model: current.model ?? engineConfig.model,
+            effortLevel,
+            cliFlags: employee?.cliFlags,
+            sessionId: currentSession.id,
+            onStream: (delta) => {
+              context.emit("session:delta", {
+                sessionId: currentSession.id,
+                type: delta.type,
+                content: delta.content,
+                toolName: delta.toolName,
+              });
+            },
+          });
+
+          const retryInterrupted = retryResult.error?.startsWith("Interrupted");
+          const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
+
+          if (retryRateLimit.limited) {
+            recordClaudeRateLimit(retryRateLimit.resetsAt);
+            logger.info(`Web session ${currentSession.id} still rate limited (attempt ${attempt})`);
+
+            const next = computeNextRetryDelayMs(retryRateLimit.resetsAt);
+            nextDelayMs = next.delayMs;
+
+            updateSession(currentSession.id, {
+              ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+              status: "waiting",
+              lastActivity: new Date().toISOString(),
+              lastError: next.resumeAt
+                ? `Claude usage limit — resumes ${next.resumeAt.toISOString()}`
+                : "Claude usage limit — waiting for reset",
+            });
+
+            continue;
+          }
+
+          // Usage limit cleared — handle result
+          if (retryResult.result) {
+            insertMessage(currentSession.id, "assistant", retryResult.result);
+          }
+
+          const completedAfterRetry = updateSession(currentSession.id, {
+            ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+            status: retryResult.error ? "error" : "idle",
+            lastActivity: new Date().toISOString(),
+            lastError: retryResult.error ?? null,
+          });
+
+          if (completedAfterRetry) {
+            notifyRateLimitResumed(completedAfterRetry);
+            notifyDiscordChannel(
+              `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
+            );
+            notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+          }
+
+          context.emit("session:completed", {
+            sessionId: currentSession.id,
+            employee: currentSession.employee || config.portal?.portalName || "Jinn",
+            title: currentSession.title,
+            result: retryResult.result,
+            error: retryResult.error || null,
+            cost: retryResult.cost,
+            durationMs: retryResult.durationMs,
+          });
+
+          logger.info(`Web session ${currentSession.id} resumed after usage reset`);
           return;
         }
 
-        logger.info(`Web session ${currentSession.id} retrying after rate limit (attempt ${retryAttempt + 1}/${MAX_RATE_LIMIT_RETRIES})`);
-
-        const retryResult = await engine.run({
-          prompt,
-          resumeSessionId: currentSession.engineSessionId ?? undefined,
-          systemPrompt,
-          cwd: JINN_HOME,
-          bin: engineConfig.bin,
-          model: currentSession.model ?? engineConfig.model,
-          effortLevel,
-          cliFlags: employee?.cliFlags,
-          sessionId: currentSession.id,
-          onStream: (delta) => {
-            context.emit("session:delta", {
-              sessionId: currentSession.id,
-              type: delta.type,
-              content: delta.content,
-              toolName: delta.toolName,
-            });
-          },
-        });
-
-        const stillLimited = retryResult.error &&
-          /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit/i.test(retryResult.error);
-
-        if (stillLimited) {
-          logger.info(`Web session ${currentSession.id} still rate limited (attempt ${retryAttempt + 1})`);
-          continue;
-        }
-
-        // Rate limit cleared — handle result
-        if (retryResult.result) {
-          insertMessage(currentSession.id, "assistant", retryResult.result);
-        }
-
-        const completedAfterRetry = updateSession(currentSession.id, {
-          engineSessionId: retryResult.sessionId,
-          status: retryResult.error ? "error" : "idle",
+        // Exhausted waiting window
+        notifyDiscordChannel(
+          `❌ Claude usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`,
+        );
+        const erroredSession = updateSession(currentSession.id, {
+          status: "error",
           lastActivity: new Date().toISOString(),
-          lastError: retryResult.error ?? null,
+          lastError: "Claude usage limit did not clear in time",
         });
-
-        if (completedAfterRetry) {
-          notifyRateLimitResumed(completedAfterRetry);
-          notifyDiscordChannel(`✅ Rate limit reset. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ''} resuming.`);
-          notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+        if (erroredSession) {
+          notifyParentSession(erroredSession, { error: "Claude usage limit did not clear in time" });
         }
-
         context.emit("session:completed", {
           sessionId: currentSession.id,
-          employee: currentSession.employee || config.portal?.portalName || "Jinn",
-          title: currentSession.title,
-          result: retryResult.result,
-          error: retryResult.error || null,
-          cost: retryResult.cost,
-          durationMs: retryResult.durationMs,
+          result: null,
+          error: "Claude usage limit did not clear in time",
         });
-
-        logger.info(`Web session ${currentSession.id} resumed after rate limit reset`);
+        logger.warn(`Web session ${currentSession.id} exhausted usage limit retries`);
         return;
+      } finally {
+        clearInterval(heartbeat);
       }
-
-      // Exhausted retries
-      notifyDiscordChannel(`❌ Rate limit did not reset within 30 minutes. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ''} has been stopped.`);
-      const erroredSession = updateSession(currentSession.id, {
-        status: "error",
-        lastActivity: new Date().toISOString(),
-        lastError: "Rate limit did not reset within 30 minutes",
-      });
-      if (erroredSession) {
-        notifyParentSession(erroredSession, { error: "Rate limit did not reset within 30 minutes" });
-      }
-      context.emit("session:completed", {
-        sessionId: currentSession.id,
-        result: null,
-        error: "Rate limit did not reset within 30 minutes",
-      });
-      logger.warn(`Web session ${currentSession.id} exhausted rate limit retries`);
-      return;
     }
 
     // Persist the assistant response
@@ -1569,7 +1679,7 @@ async function runWebSession(
     }
 
     const completedSession = updateSession(currentSession.id, {
-      engineSessionId: result.sessionId,
+      ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
       status: result.error ? "error" : "idle",
       lastActivity: new Date().toISOString(),
       lastError: result.error ?? null,

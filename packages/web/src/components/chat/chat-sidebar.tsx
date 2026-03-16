@@ -342,13 +342,16 @@ export function ChatSidebar({
     })
   }
 
-  // Direct sessions — one per session
-  for (const s of directSessions) {
+  // Direct sessions — grouped into a single entry (like employees)
+  if (directSessions.length > 0) {
+    const sorted = sortSessionsByActivity(directSessions)
     flatItems.push({
-      type: 'direct',
-      session: s,
-      sortKey: getSessionActivity(s),
-      pinKey: s.id,
+      type: 'employee',
+      employeeName: portalSlug,
+      employeeData: { name: portalSlug, displayName: portalName, emoji: '💬', department: 'direct', role: '', rank: 'manager', engine: '', model: '', persona: '' } as Employee,
+      sessions: sorted,
+      sortKey: getSessionActivity(sorted[0]),
+      pinKey: `emp:${portalSlug}`,
     })
   }
 
