@@ -120,6 +120,18 @@ export const api = {
     get<{ needed: boolean; sessionsCount: number; hasEmployees: boolean; portalName: string | null; operatorName: string | null }>("/api/onboarding"),
   completeOnboarding: (data: { portalName?: string; operatorName?: string; language?: string }) =>
     post<{ status: string; portal: { portalName?: string; operatorName?: string; language?: string } }>("/api/onboarding", data),
+  getMeetings: (status?: string) =>
+    get<any[]>(`/api/meetings${status ? `?status=${status}` : ''}`),
+  createMeeting: (config: any) =>
+    post<any>('/api/meetings', config),
+  getMeeting: (id: string) =>
+    get<any>(`/api/meetings/${id}`),
+  contributeMeeting: (id: string, message: string) =>
+    post<any>(`/api/meetings/${id}/contribute`, { message }),
+  stopMeeting: (id: string) =>
+    post<any>(`/api/meetings/${id}/stop`, {}),
+  deleteMeeting: (id: string) =>
+    del<any>(`/api/meetings/${id}`),
   getActivity: () =>
     get<Array<{ event: string; payload: unknown; ts: number }>>("/api/activity"),
   updateDepartmentBoard: (name: string, data: unknown) =>
