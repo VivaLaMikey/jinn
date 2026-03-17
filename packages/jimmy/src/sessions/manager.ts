@@ -106,15 +106,18 @@ export class SessionManager {
   private connectorNames: string[];
   private queue = new SessionQueue();
   private connectorProvider: () => Map<string, Connector> = () => new Map();
+  private emit: (event: string, payload: unknown) => void;
 
   constructor(
     config: JinnConfig,
     engines: Map<string, Engine>,
     connectorNames: string[] = [],
+    emit?: (event: string, payload: unknown) => void,
   ) {
     this.config = config;
     this.engines = engines;
     this.connectorNames = connectorNames;
+    this.emit = emit ?? (() => {});
   }
 
   setConnectorProvider(provider: () => Map<string, Connector>): void {
@@ -212,6 +215,7 @@ export class SessionManager {
     }
 
     insertMessage(session.id, "user", msg.text);
+    this.emit("session:message", { sessionId: session.id, role: "user", content: msg.text });
 
     const capabilities = connector.getCapabilities();
     const decorateMessages = session.source !== "cron";
@@ -390,6 +394,7 @@ export class SessionManager {
               : fallbackResult.error || "(No response from engine)";
 
             insertMessage(session.id, "assistant", fallbackText);
+            this.emit("session:message", { sessionId: session.id, role: "assistant", content: fallbackText });
             if (fallbackResult.cost || fallbackResult.numTurns) {
               accumulateSessionCost(session.id, fallbackResult.cost ?? 0, fallbackResult.numTurns ?? 1);
             }
@@ -559,6 +564,7 @@ export class SessionManager {
               : retryResult.error || "(No response from engine)";
 
             insertMessage(session.id, "assistant", retryText);
+            this.emit("session:message", { sessionId: session.id, role: "assistant", content: retryText });
             if (retryResult.cost || retryResult.numTurns) {
               accumulateSessionCost(session.id, retryResult.cost ?? 0, retryResult.numTurns ?? 1);
             }
@@ -620,6 +626,7 @@ export class SessionManager {
         : result.error || "(No response from engine)";
 
       insertMessage(session.id, "assistant", responseText);
+      this.emit("session:message", { sessionId: session.id, role: "assistant", content: responseText });
       if (result.cost || result.numTurns) {
         accumulateSessionCost(session.id, result.cost ?? 0, result.numTurns ?? 1);
       }

@@ -212,6 +212,22 @@ function ChatPage() {
         }
       }
 
+      if (event === 'session:message') {
+        const role = String(p.role || '')
+        const content = String(p.content || '')
+        if (role === 'user' || role === 'assistant') {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: role as 'user' | 'assistant',
+              content,
+              timestamp: Date.now(),
+            },
+          ])
+        }
+      }
+
       if (event === 'session:notification') {
         // Internal notification (e.g. child session completed) — display as a system notification
         const notifMessage = String(p.message || '')

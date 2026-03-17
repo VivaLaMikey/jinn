@@ -146,8 +146,9 @@ export async function startGateway(
     connectorNames.push("whatsapp");
   }
 
-  // Session manager
-  const sessionManager = new SessionManager(config, engines, connectorNames);
+  // Session manager — emit is defined below; pass a forwarding closure so it's
+  // always current even though emit captures wsClients by reference.
+  const sessionManager = new SessionManager(config, engines, connectorNames, (event, payload) => emit(event, payload));
 
   // Build employee registry
   let employeeRegistry = scanOrg();
@@ -378,6 +379,14 @@ export async function startGateway(
       logger.info("Skills changed, notifying clients");
       emit("skills:changed", {});
     },
+    onRestartTrigger: (reason: string) => {
+      emit("gateway:restart_scheduled", { reason, countdown: 5000 });
+      setTimeout(() => {
+        emit("gateway:restart_warning", { countdown: 2000 });
+        logger.info(`Auto-restart triggered: ${reason}`);
+        setTimeout(() => process.kill(process.pid, "SIGTERM"), 2000);
+      }, 5000);
+    },
   });
 
   // Start listening
@@ -402,10 +411,10 @@ export async function startGateway(
     });
   });
 
-  // Notify connected WebSocket clients about interrupted sessions available for resume
-  if (resumable.length > 0) {
-    // Small delay to let WebSocket clients connect after server starts
-    setTimeout(() => {
+  // Notify connected WebSocket clients about interrupted sessions available for resume.
+  // Also emit gateway:restarted so the UI knows a restart occurred.
+  setTimeout(() => {
+    if (resumable.length > 0) {
       emit("sessions:interrupted", {
         count: resumable.length,
         sessions: resumable.map((s) => ({
@@ -416,8 +425,15 @@ export async function startGateway(
           lastActivity: s.lastActivity,
         })),
       });
-    }, 1000);
-  }
+    }
+    if (recovered > 0 || recoveredQueue > 0) {
+      emit("gateway:restarted", {
+        recoveredSessions: recovered,
+        recoveredQueueItems: recoveredQueue,
+        resumableSessions: resumable.length,
+      });
+    }
+  }, 1000);
 
   // Prevent macOS from sleeping while the gateway is running
   let caffeinate: ChildProcess | null = null;
