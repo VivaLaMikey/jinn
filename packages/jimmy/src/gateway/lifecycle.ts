@@ -1,12 +1,14 @@
 import { execSync, fork } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import http from "node:http";
 import { fileURLToPath } from "node:url";
-import { PID_FILE, JINN_HOME } from "../shared/paths.js";
+import { PID_FILE, JINN_HOME, INSTANCES_REGISTRY } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import type { JinnConfig } from "../shared/types.js";
 import { startGateway } from "./server.js";
 import { loadConfig } from "../shared/config.js";
+import { listSessions } from "../sessions/registry.js";
 
 export async function startForeground(config: JinnConfig): Promise<void> {
   const cleanup = await startGateway(config);
@@ -137,6 +139,92 @@ function findPidOnPort(port: number): number | null {
   } catch {
     return null;
   }
+}
+
+/** Returns the count of sessions currently in "running" status. */
+export function getActiveSessions(): number {
+  try {
+    return listSessions({ status: "running" }).length;
+  } catch {
+    return 0;
+  }
+}
+
+export interface RestartResult {
+  instance: string;
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Gracefully restarts this gateway instance.
+ * Sends SIGTERM (triggering the existing cleanup handler). The cleanup handler
+ * marks sessions as interrupted and exits cleanly. A new daemon should be
+ * started by whatever invoked the restart (API handler or CLI).
+ *
+ * Note: startDaemon() is intentionally NOT called here to avoid a port conflict
+ * — the old process must release the port before the new one can bind it.
+ * The API endpoint triggers the SIGTERM and the CLI `jinn restart` command
+ * polls for the old process to exit before starting the new one.
+ */
+export async function restart(_port?: number): Promise<void> {
+  logger.info("Restart requested — sending SIGTERM to current process");
+
+  // Delay slightly so any in-flight HTTP response can be sent first
+  setTimeout(() => {
+    process.kill(process.pid, "SIGTERM");
+  }, 500);
+}
+
+/**
+ * Restarts all registered instances by calling their REST API.
+ * Restarts self last.
+ */
+export async function restartAll(): Promise<RestartResult[]> {
+  let instances: Array<{ name: string; port: number }> = [];
+  try {
+    if (fs.existsSync(INSTANCES_REGISTRY)) {
+      instances = JSON.parse(fs.readFileSync(INSTANCES_REGISTRY, "utf-8"));
+    }
+  } catch {
+    // fall through with empty list
+  }
+
+  const currentPort = resolvePort();
+  const results: RestartResult[] = [];
+
+  // Restart remote instances first
+  for (const inst of instances) {
+    if (inst.port === currentPort) continue;
+    try {
+      await postRestart(inst.port, true);
+      results.push({ instance: inst.name, success: true });
+    } catch (err) {
+      results.push({ instance: inst.name, success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  // Restart self last (fire-and-forget — process will exit via SIGTERM)
+  const selfName = instances.find((i) => i.port === currentPort)?.name ?? "self";
+  results.push({ instance: selfName, success: true });
+  setTimeout(() => process.kill(process.pid, "SIGTERM"), 200);
+
+  return results;
+}
+
+function postRestart(port: number, force: boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ force });
+    const req = http.request(
+      { hostname: "127.0.0.1", port, path: "/api/restart", method: "POST", timeout: 5000,
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
+      (res) => { res.resume(); resolve(); },
+    );
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error(`Timeout restarting instance on port ${port}`)); });
+    req.write(body);
+    req.end();
+  });
 }
 
 export interface GatewayStatus {

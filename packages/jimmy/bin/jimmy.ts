@@ -7,7 +7,7 @@ const program = new Command();
 program
   .name("jinn")
   .description("Lightweight AI gateway daemon")
-  .version("0.3.0")
+  .version("0.5.4")
   .option("-i, --instance <name>", "Target a specific instance (default: jinn)");
 
 // Pre-parse to set JINN_HOME before any module imports resolve paths
@@ -153,6 +153,17 @@ program
       skillsRestore();
     });
 }
+
+program
+  .command("restart")
+  .description("Gracefully restart a running gateway instance")
+  .option("--all", "Restart all registered instances")
+  .option("--force", "Restart even if active sessions are in progress")
+  .action(async (opts: { all?: boolean; force?: boolean }) => {
+    const { runRestart } = await import("../src/cli/restart.js");
+    const instance = program.opts().instance as string | undefined;
+    await runRestart({ all: opts.all, force: opts.force, instance });
+  });
 
 program
   .command("chrome-allow")

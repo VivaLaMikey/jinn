@@ -1442,6 +1442,99 @@ export async function handleApiRequest(
       if (handled) return;
     }
 
+    // GET /api/restart/status — check whether a restart is safe
+    if (method === "GET" && pathname === "/api/restart/status") {
+      const runningSessions = listSessions({ status: "running" });
+      const pendingItems = listAllPendingQueueItems();
+      return json(res, {
+        safe: runningSessions.length === 0,
+        activeSessions: runningSessions.length,
+        activeQueueItems: pendingItems.length,
+      });
+    }
+
+    // POST /api/restart — restart this instance
+    if (method === "POST" && pathname === "/api/restart") {
+      const bodyResult = await readJsonBody(req, res);
+      if (!bodyResult.ok) return;
+      const body = bodyResult.body as Record<string, unknown>;
+      const force = body.force === true;
+
+      const runningSessions = listSessions({ status: "running" });
+      if (runningSessions.length > 0 && !force) {
+        return json(res, {
+          status: "warning",
+          message: `${runningSessions.length} active session(s) in progress. Use { "force": true } to restart anyway.`,
+          activeSessions: runningSessions.length,
+        }, 409);
+      }
+
+      // Warn connected clients before restarting
+      context.emit("gateway:restart_warning", { countdown: 2000 });
+
+      // Respond first, then trigger restart after a short delay
+      json(res, { status: "restarting", message: "Gateway will restart in 2 seconds" });
+
+      setTimeout(() => {
+        logger.info("Restart triggered via API — sending SIGTERM");
+        process.kill(process.pid, "SIGTERM");
+      }, 2000);
+      return;
+    }
+
+    // POST /api/restart/all — restart all registered instances
+    if (method === "POST" && pathname === "/api/restart/all") {
+      const bodyResult = await readJsonBody(req, res);
+      if (!bodyResult.ok) return;
+      const body = bodyResult.body as Record<string, unknown>;
+      const force = body.force === true;
+
+      const instances = loadInstances();
+      const currentPort = context.getConfig().gateway.port || 7777;
+      const results: Array<{ instance: string; success: boolean; error?: string }> = [];
+
+      // Restart other instances first via their API
+      for (const inst of instances) {
+        if (inst.port === currentPort) continue;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const reqBody = JSON.stringify({ force });
+            const outReq = http.request(
+              {
+                hostname: "127.0.0.1",
+                port: inst.port,
+                path: "/api/restart",
+                method: "POST",
+                timeout: 5000,
+                headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(reqBody) },
+              },
+              (r) => { r.resume(); resolve(); },
+            );
+            outReq.on("error", reject);
+            outReq.on("timeout", () => { outReq.destroy(); reject(new Error("timeout")); });
+            outReq.write(reqBody);
+            outReq.end();
+          });
+          results.push({ instance: inst.name, success: true });
+        } catch (err) {
+          results.push({ instance: inst.name, success: false, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+
+      // Restart self last
+      const selfName = instances.find((i) => i.port === currentPort)?.name ?? "self";
+      results.push({ instance: selfName, success: true });
+
+      context.emit("gateway:restart_warning", { countdown: 2000 });
+      json(res, { status: "restarting", results });
+
+      setTimeout(() => {
+        logger.info("Restart-all triggered via API — sending SIGTERM to self");
+        process.kill(process.pid, "SIGTERM");
+      }, 2000);
+      return;
+    }
+
     return notFound(res);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

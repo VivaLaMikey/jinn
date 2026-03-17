@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { watch, type FSWatcher } from "chokidar";
-import { CONFIG_PATH, CRON_JOBS, ORG_DIR, SKILLS_DIR, CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR } from "../shared/paths.js";
+import { CONFIG_PATH, CRON_JOBS, ORG_DIR, SKILLS_DIR, CLAUDE_SKILLS_DIR, AGENTS_SKILLS_DIR, JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 
 export interface WatcherCallbacks {
@@ -9,6 +9,7 @@ export interface WatcherCallbacks {
   onCronReload: () => void;
   onOrgChange: () => void;
   onSkillsChange: () => void;
+  onRestartTrigger?: (reason: string) => void;
 }
 
 let watchers: FSWatcher[] = [];
@@ -128,7 +129,31 @@ export function startWatchers(callbacks: WatcherCallbacks): void {
     }, DEBOUNCE_MS),
   );
 
-  watchers = [configWatcher, cronWatcher, orgWatcher, skillsWatcher];
+  // Watch for .restart-trigger file — external scripts (npm postinstall, deploy hooks)
+  // can touch this file to trigger a graceful restart.
+  const restartTriggerPath = path.join(JINN_HOME, ".restart-trigger");
+  const restartWatcher = watch(restartTriggerPath, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 200 },
+  });
+  restartWatcher.on("add", () => {
+    let reason = "external trigger";
+    try {
+      if (fs.existsSync(restartTriggerPath)) {
+        const content = fs.readFileSync(restartTriggerPath, "utf-8").trim();
+        if (content) reason = content;
+        fs.unlinkSync(restartTriggerPath);
+      }
+    } catch {
+      // ignore read/unlink errors
+    }
+    logger.info(`Update detected (${reason}), scheduling restart in 5s...`);
+    if (callbacks.onRestartTrigger) {
+      callbacks.onRestartTrigger(reason);
+    }
+  });
+
+  watchers = [configWatcher, cronWatcher, orgWatcher, skillsWatcher, restartWatcher];
   logger.info("File watchers started");
 }
 
