@@ -8,7 +8,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession } from "../sessions/registry.js";
+import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, cleanupExpiredSessions } from "../sessions/registry.js";
 import { SessionManager } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -272,6 +272,20 @@ export async function startGateway(
   const cronJobs = loadJobs();
   startScheduler(cronJobs, sessionManager, config, connectorMap);
   logger.info(`Loaded ${cronJobs.length} cron job(s)`);
+
+  // Session TTL cleanup — run on boot and every 6 hours
+  const sessionTTLDays = config.sessions?.sessionTTLDays ?? 7;
+  if (sessionTTLDays > 0) {
+    const runCleanup = () => {
+      const deleted = cleanupExpiredSessions(sessionTTLDays);
+      if (deleted > 0) {
+        logger.info(`Session cleanup: deleted ${deleted} expired session(s) (TTL: ${sessionTTLDays} days)`);
+      }
+    };
+    runCleanup();
+    const cleanupInterval = setInterval(runCleanup, 6 * 60 * 60 * 1000);
+    cleanupInterval.unref();
+  }
 
   // Mutable config reference for hot-reload
   let currentConfig = config;

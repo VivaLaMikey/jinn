@@ -39,7 +39,7 @@ export class DiscordConnector implements Connector {
   private handler: ((msg: IncomingMessage) => void) | null = null;
   private bootTimeMs = Date.now();
   private allowedUserIds: Set<string>;
-  private status: "starting" | "running" | "stopped" | "error" = "starting";
+  private status: "starting" | "running" | "stopped" | "error" | "reconnecting" = "starting";
   private lastError: string | null = null;
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
@@ -96,6 +96,37 @@ export class DiscordConnector implements Connector {
       logger.error(`Discord client error: ${err.message}`);
     });
 
+    // Fix B: Rate limit detection and user feedback
+    this.client.rest.on('rateLimited', (info) => {
+      logger.warn(`Discord rate limited: route=${info.route}, timeout=${info.timeToReset}ms, limit=${info.limit}, method=${info.method}`);
+      if (info.timeToReset > 5000) {
+        logger.error(`Discord rate limit delay >5s on ${info.method} ${info.route} — messages may be noticeably delayed`);
+      }
+    });
+
+    // Fix C: Reconnection alerting
+    this.client.on('shardDisconnect', (event, shardId) => {
+      this.status = 'error';
+      this.lastError = `Shard ${shardId} disconnected (code: ${event.code})`;
+      logger.error(`Discord shard ${shardId} disconnected (code: ${event.code}, reason: ${event.reason || 'unknown'})`);
+    });
+
+    this.client.on('shardReconnecting', (shardId) => {
+      this.status = 'reconnecting' as any;
+      logger.warn(`Discord shard ${shardId} reconnecting...`);
+    });
+
+    this.client.on('shardResume', (shardId, replayedEvents) => {
+      this.status = 'running';
+      this.lastError = null;
+      logger.info(`Discord shard ${shardId} resumed (replayed ${replayedEvents} events)`);
+    });
+
+    this.client.on('shardError', (error, shardId) => {
+      this.lastError = `Shard ${shardId} error: ${error.message}`;
+      logger.error(`Discord shard ${shardId} error: ${error.message}`);
+    });
+
     await this.client.login(this.config.botToken);
   }
 
@@ -116,8 +147,8 @@ export class DiscordConnector implements Connector {
 
   getHealth(): ConnectorHealth {
     return {
-      status: this.status === "running" ? "running" : this.status === "error" ? "error" : "stopped",
-      detail: this.lastError ?? undefined,
+      status: this.status === "running" ? "running" : this.status === "reconnecting" ? "error" : this.status === "error" ? "error" : "stopped",
+      detail: this.lastError ?? (this.status === "reconnecting" ? "Reconnecting to Discord..." : undefined),
       capabilities: this.getCapabilities(),
     };
   }
@@ -132,9 +163,9 @@ export class DiscordConnector implements Connector {
   }
 
   async sendMessage(target: Target, text: string): Promise<string | undefined> {
-    try {
+    return this.withRetry(async () => {
       const channel = await this.client.channels.fetch(target.channel);
-      if (!channel || !channel.isTextBased()) return;
+      if (!channel || !channel.isTextBased()) return undefined;
       const chunks = formatResponse(text);
       let lastId: string | undefined;
       for (const chunk of chunks) {
@@ -142,15 +173,13 @@ export class DiscordConnector implements Connector {
         lastId = sent.id;
       }
       return lastId;
-    } catch (err) {
-      logger.error(`Discord sendMessage error: ${err instanceof Error ? err.message : err}`);
-    }
+    }, 'sendMessage');
   }
 
   async replyMessage(target: Target, text: string): Promise<string | undefined> {
-    try {
+    return this.withRetry(async () => {
       const channel = await this.client.channels.fetch(target.thread ?? target.channel);
-      if (!channel || !channel.isTextBased()) return;
+      if (!channel || !channel.isTextBased()) return undefined;
       const chunks = formatResponse(text);
       let lastId: string | undefined;
       for (const chunk of chunks) {
@@ -158,21 +187,17 @@ export class DiscordConnector implements Connector {
         lastId = sent.id;
       }
       return lastId;
-    } catch (err) {
-      logger.error(`Discord replyMessage error: ${err instanceof Error ? err.message : err}`);
-    }
+    }, 'replyMessage');
   }
 
   async editMessage(target: Target, text: string): Promise<void> {
-    try {
+    await this.withRetry(async () => {
       if (!target.messageTs) return;
       const channel = await this.client.channels.fetch(target.channel);
       if (!channel || !channel.isTextBased()) return;
       const msg = await (channel as TextChannel).messages.fetch(target.messageTs);
       await msg.edit(text.slice(0, 2000));
-    } catch (err) {
-      logger.error(`Discord editMessage error: ${err instanceof Error ? err.message : err}`);
-    }
+    }, 'editMessage');
   }
 
   async addReaction(target: Target, emoji: string): Promise<void> {
@@ -221,6 +246,26 @@ export class DiscordConnector implements Connector {
     } catch {
       // non-fatal
     }
+  }
+
+  // Fix A: Exponential backoff retry helper
+  private async withRetry<T>(operation: () => Promise<T>, operationName: string): Promise<T | undefined> {
+    const delays = [1000, 2000, 4000];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await operation();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (attempt < 3) {
+          const delay = delays[attempt - 1];
+          logger.warn(`Discord ${operationName} failed (attempt ${attempt}/3), retrying in ${delay}ms: ${message}`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          logger.error(`Discord ${operationName} failed after 3 attempts: ${message}`);
+        }
+      }
+    }
+    return undefined;
   }
 
   private async handleMessage(message: Message): Promise<void> {

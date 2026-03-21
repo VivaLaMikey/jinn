@@ -322,6 +322,8 @@ export interface JinnConfig {
     rateLimitStrategy?: "wait" | "fallback";
     /** Engine to use when rateLimitStrategy="fallback". Default: "codex" */
     fallbackEngine?: "codex";
+    /** Days of inactivity before completed/error/idle sessions are auto-deleted. Default: 7. 0 = disabled. */
+    sessionTTLDays?: number;
   };
   cron?: {
     defaultDelivery?: CronDelivery;

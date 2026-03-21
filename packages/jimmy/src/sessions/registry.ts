@@ -430,6 +430,32 @@ export function deleteSession(id: string): boolean {
   return result.changes > 0;
 }
 
+/**
+ * Delete sessions that have been idle longer than the TTL.
+ * Only deletes sessions with status: completed, error, or idle.
+ * Never deletes running, waiting, or interrupted sessions.
+ */
+export function cleanupExpiredSessions(ttlDays: number): number {
+  if (ttlDays <= 0) return 0;
+  const db = initDb();
+  const cutoff = new Date(Date.now() - ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  // First delete messages for expired sessions
+  db.prepare(`
+    DELETE FROM messages WHERE session_id IN (
+      SELECT id FROM sessions
+      WHERE last_activity < ?
+      AND status IN ('completed', 'error', 'idle')
+    )
+  `).run(cutoff);
+  // Then delete the sessions
+  const result = db.prepare(`
+    DELETE FROM sessions
+    WHERE last_activity < ?
+    AND status IN ('completed', 'error', 'idle')
+  `).run(cutoff);
+  return result.changes;
+}
+
 export function deleteSessions(ids: string[]): number {
   if (ids.length === 0) return 0;
   const db = initDb();

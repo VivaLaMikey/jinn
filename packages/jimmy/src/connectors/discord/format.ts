@@ -15,6 +15,23 @@ export function formatResponse(text: string): string[] {
     chunks.push(remaining.slice(0, cutAt));
     remaining = remaining.slice(cutAt).trimStart();
   }
+
+  // Add chunk numbering when there are multiple chunks
+  if (chunks.length > 1) {
+    const n = chunks.length;
+    for (let i = 0; i < chunks.length; i++) {
+      if (i === 0) {
+        // Append " (1/N)" to the first chunk, trimming content if needed
+        const suffix = ` (1/${n})`;
+        const maxContent = DISCORD_MAX_LENGTH - suffix.length;
+        chunks[i] = chunks[i].slice(0, maxContent) + suffix;
+      } else {
+        // Prepend "(i+1/N) " to subsequent chunks
+        chunks[i] = `(${i + 1}/${n}) ${chunks[i]}`;
+      }
+    }
+  }
+
   return chunks;
 }
 
