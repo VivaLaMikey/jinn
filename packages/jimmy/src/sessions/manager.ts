@@ -24,6 +24,8 @@ import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { isCircuitOpen, getCircuitState } from "../shared/circuitBreaker.js";
+import { isSessionFrozen } from "../gateway/restart-tracker.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
@@ -137,6 +139,18 @@ export class SessionManager {
 
     let session = getSessionBySessionKey(msg.sessionKey);
     if (!session) {
+      // Block new session creation while a restart is pending.
+      const freezeState = isSessionFrozen();
+      if (freezeState.frozen) {
+        logger.warn(`Session creation blocked (session frozen): ${freezeState.reason}`);
+        try {
+          const target = connector.reconstructTarget(msg.replyContext);
+          await connector.replyMessage(target, `⚠️ Server restart in progress — please try again in a moment. (${freezeState.reason})`);
+        } catch {
+          // best-effort reply; ignore errors
+        }
+        return;
+      }
       session = createSession({
         engine: opts.engine ?? opts.employee?.engine ?? this.config.engines.default,
         source: msg.source,
@@ -433,6 +447,28 @@ export class SessionManager {
         }
 
         // Wait strategy: wait until reset and retry automatically
+        // If the circuit breaker is open, skip the wait loop to avoid blocking
+        if (isCircuitOpen()) {
+          const cbState = getCircuitState();
+          logger.warn(
+            `[circuit-breaker:open] Session ${session.id} — circuit breaker open (${cbState.consecutiveFailures} consecutive failures). Skipping wait-until-reset loop.`,
+          );
+          this.emit("session:circuit-breaker", {
+            sessionId: session.id,
+            state: cbState,
+          });
+          updateSession(session.id, {
+            status: "error",
+            lastActivity: new Date().toISOString(),
+            lastError: "Circuit breaker open — too many consecutive failures",
+          });
+          await connector.replyMessage(
+            target,
+            "Too many consecutive failures — I've stopped retrying. Please try again in a few minutes.",
+          ).catch(() => {});
+          return;
+        }
+
         const waitEmoji = "hourglass_flowing_sand";
 
         const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);

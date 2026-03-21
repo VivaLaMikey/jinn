@@ -37,6 +37,7 @@ import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLangua
 import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { isCircuitOpen, getCircuitState } from "../shared/circuitBreaker.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
@@ -47,6 +48,15 @@ import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleMeetingsApi } from "../meetings/api.js";
+import {
+  canRestart,
+  recordRestart,
+  freezeSessions,
+  isSessionFrozen,
+  resetCircuitBreaker,
+  getRestartTrackerState,
+} from "./restart-tracker.js";
+import { spawnRestartWatcher } from "./restart-watcher-spawner.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -501,6 +511,14 @@ export async function handleApiRequest(
     // POST /api/sessions/stub — create a session with a pre-populated assistant
     // message but do NOT run the engine. Used for lazy onboarding.
     if (method === "POST" && pathname === "/api/sessions/stub") {
+      const freezeState = isSessionFrozen();
+      if (freezeState.frozen) {
+        return json(res, {
+          error: "Server restarting",
+          reason: freezeState.reason,
+          retryAfterMs: 10000,
+        }, 503);
+      }
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -527,6 +545,14 @@ export async function handleApiRequest(
 
     // POST /api/sessions
     if (method === "POST" && pathname === "/api/sessions") {
+      const freezeStateNew = isSessionFrozen();
+      if (freezeStateNew.frozen) {
+        return json(res, {
+          error: "Server restarting",
+          reason: freezeStateNew.reason,
+          retryAfterMs: 10000,
+        }, 503);
+      }
       const _parsed = await readJsonBody(req, res);
       if (!_parsed.ok) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1460,6 +1486,16 @@ export async function handleApiRequest(
       const body = bodyResult.body as Record<string, unknown>;
       const force = body.force === true;
 
+      // Circuit-breaker check
+      const cbCheck = canRestart();
+      if (!cbCheck.allowed) {
+        context.emit("gateway:restart_halted", { reason: cbCheck.reason });
+        return json(res, {
+          status: "halted",
+          message: cbCheck.reason,
+        }, 503);
+      }
+
       const runningSessions = listSessions({ status: "running" });
       if (runningSessions.length > 0 && !force) {
         return json(res, {
@@ -1469,16 +1505,30 @@ export async function handleApiRequest(
         }, 409);
       }
 
-      // Warn connected clients before restarting
-      context.emit("gateway:restart_warning", { countdown: 2000 });
+      // Record restart and freeze new session creation before responding.
+      recordRestart();
+      freezeSessions("Server restart requested via API");
+      context.emit("gateway:sessions_frozen", {
+        reason: "Server restart requested via API",
+        retryAfterMs: 10000,
+      });
+      context.emit("gateway:restart_scheduled", {
+        reason: "API restart request",
+        countdownMs: 2000,
+        estimatedDowntimeMs: 10000,
+      });
 
       // Respond first, then trigger restart after a short delay
       json(res, { status: "restarting", message: "Gateway will restart in 2 seconds" });
 
+      const restartPort = context.getConfig().gateway?.port || 7777;
+      spawnRestartWatcher(restartPort);
+
       setTimeout(() => {
+        context.emit("gateway:restart_imminent", { reason: "API restart request" });
         logger.info("Restart triggered via API — sending SIGTERM");
-        process.kill(process.pid, "SIGTERM");
-      }, 2000);
+        setTimeout(() => process.kill(process.pid, "SIGTERM"), 1000);
+      }, 1000);
       return;
     }
 
@@ -1488,6 +1538,16 @@ export async function handleApiRequest(
       if (!bodyResult.ok) return;
       const body = bodyResult.body as Record<string, unknown>;
       const force = body.force === true;
+
+      // Circuit-breaker check for self
+      const cbCheckAll = canRestart();
+      if (!cbCheckAll.allowed) {
+        context.emit("gateway:restart_halted", { reason: cbCheckAll.reason });
+        return json(res, {
+          status: "halted",
+          message: cbCheckAll.reason,
+        }, 503);
+      }
 
       const instances = loadInstances();
       const currentPort = context.getConfig().gateway.port || 7777;
@@ -1525,14 +1585,38 @@ export async function handleApiRequest(
       const selfName = instances.find((i) => i.port === currentPort)?.name ?? "self";
       results.push({ instance: selfName, success: true });
 
-      context.emit("gateway:restart_warning", { countdown: 2000 });
+      recordRestart();
+      freezeSessions("Server restart-all requested via API");
+      context.emit("gateway:sessions_frozen", {
+        reason: "Server restart-all requested via API",
+        retryAfterMs: 10000,
+      });
+      context.emit("gateway:restart_scheduled", {
+        reason: "API restart-all request",
+        countdownMs: 2000,
+        estimatedDowntimeMs: 10000,
+      });
       json(res, { status: "restarting", results });
 
+      spawnRestartWatcher(currentPort);
+
       setTimeout(() => {
+        context.emit("gateway:restart_imminent", { reason: "API restart-all request" });
         logger.info("Restart-all triggered via API — sending SIGTERM to self");
-        process.kill(process.pid, "SIGTERM");
-      }, 2000);
+        setTimeout(() => process.kill(process.pid, "SIGTERM"), 1000);
+      }, 1000);
       return;
+    }
+
+    // POST /api/restart/reset-circuit-breaker — manually clear a halted restart state
+    if (method === "POST" && pathname === "/api/restart/reset-circuit-breaker") {
+      resetCircuitBreaker();
+      return json(res, { status: "ok", message: "Restart circuit breaker reset" });
+    }
+
+    // GET /api/restart/circuit-breaker — inspect current circuit-breaker state
+    if (method === "GET" && pathname === "/api/restart/circuit-breaker") {
+      return json(res, getRestartTrackerState());
     }
 
     return notFound(res);
@@ -1952,6 +2036,24 @@ async function runWebSession(
       }
 
       // Otherwise: wait until reset and retry automatically
+      // If the circuit breaker is open, skip the wait loop to avoid blocking
+      if (isCircuitOpen()) {
+        const cbState = getCircuitState();
+        logger.warn(
+          `[circuit-breaker:open] Web session ${currentSession.id} — circuit breaker open (${cbState.consecutiveFailures} consecutive failures). Skipping wait-until-reset loop.`,
+        );
+        context.emit("session:circuit-breaker", {
+          sessionId: currentSession.id,
+          state: cbState,
+        });
+        updateSession(currentSession.id, {
+          status: "error",
+          lastActivity: new Date().toISOString(),
+          lastError: "Circuit breaker open — too many consecutive failures",
+        });
+        return;
+      }
+
       const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
       const deadlineMs = computeRateLimitDeadlineMs(
         rateLimit.resetsAt,

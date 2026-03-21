@@ -132,6 +132,11 @@ export const api = {
     post<any>(`/api/meetings/${id}/stop`, {}),
   deleteMeeting: (id: string) =>
     del<any>(`/api/meetings/${id}`),
+  getMeetingLog: (params?: { from?: string; to?: string; calledBy?: string; department?: string }) => {
+    const qs = params ? Object.entries(params).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v!.toString())}`).join('&') : ''
+    return get<any[]>(`/api/meetings/log${qs ? `?${qs}` : ''}`)
+  },
+  getMeetingStats: () => get<{ employeeStats: { employee: string; count: number }[]; globalCount: number }>('/api/meetings/stats'),
   getActivity: () =>
     get<Array<{ event: string; payload: unknown; ts: number }>>("/api/activity"),
   updateDepartmentBoard: (name: string, data: unknown) =>

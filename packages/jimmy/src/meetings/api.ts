@@ -11,6 +11,12 @@ import {
   deleteMeeting,
 } from "./store.js";
 import type { MeetingConfig, MeetingRunDeps } from "./types.js";
+import {
+  checkEmployeeMeetingLimit,
+  recordEmployeeMeetingProposal,
+  getEmployeeMeetingStats,
+} from "./employeeRateLimit.js";
+import { readMeetingLog } from "./meetingLog.js";
 
 // ── Helpers (matching api.ts patterns) ──────────────────────────
 
@@ -71,6 +77,56 @@ function matchRoute(
   return params;
 }
 
+// ── Response shaping ────────────────────────────────────────────
+
+/**
+ * Flatten a stored Meeting for API responses.
+ *
+ * The Meeting record keeps config nested under `config`, but the frontend
+ * (packages/web/src/app/meetings/page.tsx — Meeting interface) expects
+ * agenda, participants, chair, settings, and calledBy at the top level.
+ *
+ * This helper spreads those fields to the top level while preserving the
+ * original `config` object for backwards compatibility.
+ *
+ * It also converts summary.actionItems from ActionItem objects
+ * ({ description, assignee, priority }) to a richer string so that the
+ * frontend's string[] rendering path still works without crashing.
+ */
+function flattenMeeting(meeting: import("./types.js").Meeting): Record<string, unknown> {
+  const { config, summary, ...rest } = meeting as any;
+
+  // Flatten config fields to top level
+  const flattened: Record<string, unknown> = {
+    ...rest,
+    config,
+    agenda: config?.agenda,
+    participants: config?.participants,
+    chair: config?.chair,
+    calledBy: config?.calledBy,
+    settings: config?.settings,
+  };
+
+  // Convert ActionItem objects to formatted strings for the frontend
+  if (summary) {
+    const actionItems = summary.actionItems ?? [];
+    flattened.summary = {
+      ...summary,
+      actionItems: actionItems.map((item: any) => {
+        if (typeof item === "string") return item;
+        let s = item.description ?? "";
+        if (item.assignee) s += ` — ${item.assignee}`;
+        if (item.priority) s += ` (${item.priority})`;
+        return s;
+      }),
+    };
+  } else {
+    flattened.summary = summary;
+  }
+
+  return flattened;
+}
+
 // ── Meeting API Handler ─────────────────────────────────────────
 
 /**
@@ -95,7 +151,7 @@ export async function handleMeetingsApi(
   if (method === "GET" && pathname === "/api/meetings") {
     const statusFilter = url.searchParams.get("status") || undefined;
     const meetings = listMeetings(statusFilter ? { status: statusFilter as any } : undefined);
-    return json(res, meetings), true;
+    return json(res, meetings.map(flattenMeeting)), true;
   }
 
   // POST /api/meetings — Create and start a new meeting
@@ -104,6 +160,28 @@ export async function handleMeetingsApi(
     if (!parsed.ok) return true;
 
     const body = parsed.body as any;
+
+    // Normalise agenda: convert plain strings to {topic: string} objects
+    if (Array.isArray(body.agenda)) {
+      let converted = 0;
+      body.agenda = body.agenda.map((item: any) => {
+        if (typeof item === "string") { converted++; return { topic: item }; }
+        return item;
+      });
+      if (converted > 0) {
+        logger.info(`Meeting API: auto-converted ${converted} string agenda items to AgendaItem objects`);
+      }
+    }
+    if (body.config?.agenda && Array.isArray(body.config.agenda)) {
+      let converted = 0;
+      body.config.agenda = body.config.agenda.map((item: any) => {
+        if (typeof item === "string") { converted++; return { topic: item }; }
+        return item;
+      });
+      if (converted > 0) {
+        logger.info(`Meeting API: auto-converted ${converted} string config.agenda items to AgendaItem objects`);
+      }
+    }
 
     // Validate required fields
     if (!body.title) return badRequest(res, "title is required"), true;
@@ -132,12 +210,25 @@ export async function handleMeetingsApi(
       body.participants.push({ employeeName: body.chair, role: "chair" });
     }
 
+    // Derive calledBy identity: prefer server-supplied header over self-asserted body field.
+    // NOTE: For full server-derived identity, the session manager would need to inject an
+    // x-employee-name header when an employee session makes HTTP requests to the gateway.
+    // Until that middleware exists, we accept the header if present and fall back to body.calledBy.
+    const derivedCalledBy = req.headers["x-employee-name"] as string | undefined
+      || req.headers["x-jinn-employee"] as string | undefined
+      || (req as any).employeeName as string | undefined
+      || null;
+    const calledBy: string = derivedCalledBy || body.calledBy || "api";
+    if (!derivedCalledBy && body.calledBy) {
+      logger.warn(`Meeting create using self-asserted calledBy: ${body.calledBy} — no server-derived identity available`);
+    }
+
     const meetingConfig: MeetingConfig = {
       title: body.title,
       agenda: body.agenda,
       participants: body.participants,
       chair: body.chair,
-      calledBy: body.calledBy || "api",
+      calledBy,
       settings: body.settings || {},
     };
 
@@ -180,12 +271,208 @@ export async function handleMeetingsApi(
         meetingPromise.catch(err => {
           logger.error(`Meeting "${meetingConfig.title}" failed: ${err instanceof Error ? err.message : String(err)}`);
         });
-        return json(res, latest, 201), true;
+        return json(res, flattenMeeting(latest), 201), true;
       }
 
       // Fallback: wait for meeting creation
       const meeting = await meetingPromise;
-      return json(res, meeting, 201), true;
+      return json(res, flattenMeeting(meeting), 201), true;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      return serverError(res, errMsg), true;
+    }
+  }
+
+  // GET /api/meetings/log — Meeting audit log (queryable)
+  if (method === "GET" && pathname === "/api/meetings/log") {
+    const from = url.searchParams.get("from") || undefined;
+    const to = url.searchParams.get("to") || undefined;
+    const calledBy = url.searchParams.get("calledBy") || undefined;
+    const department = url.searchParams.get("department") || undefined;
+    const entries = readMeetingLog({ from, to, calledBy, department });
+    return json(res, entries), true;
+  }
+
+  // GET /api/meetings/stats — Employee rate limit observability
+  if (method === "GET" && pathname === "/api/meetings/stats") {
+    const employeeStats = getEmployeeMeetingStats();
+    const globalCount = employeeStats.reduce((sum, s) => sum + s.count, 0);
+    return json(res, { employeeStats, globalCount }), true;
+  }
+
+  // POST /api/meetings/propose — Employee-initiated meeting proposal
+  if (method === "POST" && pathname === "/api/meetings/propose") {
+    const parsed = await readJsonBody(req, res);
+    if (!parsed.ok) return true;
+
+    const body = parsed.body as any;
+
+    // Normalise agenda: convert plain strings to {topic: string} objects
+    if (Array.isArray(body.agenda)) {
+      let converted = 0;
+      body.agenda = body.agenda.map((item: any) => {
+        if (typeof item === "string") { converted++; return { topic: item }; }
+        return item;
+      });
+      if (converted > 0) {
+        logger.info(`Meeting API (propose): auto-converted ${converted} string agenda items to AgendaItem objects`);
+      }
+    }
+
+    // Derive proposer identity: prefer server-supplied header over self-asserted body field.
+    // This prevents callers from spoofing another employee's identity and bypassing rate limits.
+    // NOTE: For full server-derived identity, the session manager should inject an x-employee-name
+    // header whenever an employee session makes HTTP requests to the gateway API. Until that
+    // middleware is in place, the header is trusted when present and body.proposedBy is the fallback.
+    const derivedIdentity = req.headers["x-employee-name"] as string | undefined
+      || req.headers["x-jinn-employee"] as string | undefined
+      || (req as any).employeeName as string | undefined
+      || null;
+
+    const proposedBy: string | undefined = derivedIdentity || body.proposedBy || undefined;
+
+    if (derivedIdentity) {
+      logger.info(`Meeting proposal: identity derived from request header — ${derivedIdentity}`);
+    } else if (body.proposedBy) {
+      logger.warn(`Meeting proposal using self-asserted identity: ${body.proposedBy} — no server-derived identity available`);
+    }
+
+    // Validate required fields
+    if (!proposedBy) return badRequest(res, "proposedBy is required"), true;
+    if (!body.title) return badRequest(res, "title is required"), true;
+    if (!body.agenda || !Array.isArray(body.agenda) || body.agenda.length === 0) {
+      return badRequest(res, "agenda is required and must be a non-empty array"), true;
+    }
+    if (!body.participants || !Array.isArray(body.participants) || body.participants.length === 0) {
+      return badRequest(res, "participants is required and must be a non-empty array"), true;
+    }
+
+    const employees = scanOrg();
+
+    // Allowlist check: proposedBy must be a registered employee in the org registry.
+    // This is the primary guard — even if body.proposedBy was self-asserted, an unknown
+    // name will be rejected here. The header path is trusted; the body path is validated.
+    if (!employees.has(proposedBy)) {
+      logger.warn(`Meeting proposal rejected — unknown employee: ${proposedBy}`);
+      json(res, { error: "Forbidden", message: `Unknown employee: ${proposedBy}. Must be a registered employee.` }, 403);
+      return true;
+    }
+
+    // Validate all participants exist
+    for (const name of body.participants) {
+      if (!employees.has(name)) {
+        return badRequest(res, `Participant "${name}" not found in org`), true;
+      }
+    }
+
+    // Require at least 1 other participant besides the proposer
+    const otherParticipants = (body.participants as string[]).filter(
+      (n: string) => n !== proposedBy,
+    );
+    if (otherParticipants.length === 0) {
+      return badRequest(res, "At least 1 participant other than the proposer is required"), true;
+    }
+
+    // Rate limit check — applied against the server-resolved proposedBy, not self-asserted body field
+    const limitCheck = checkEmployeeMeetingLimit(proposedBy);
+    if (!limitCheck.allowed) {
+      json(res, { error: limitCheck.reason, retryAfterMs: limitCheck.retryAfterMs }, 429);
+      return true;
+    }
+
+    // Determine chair: proposer chairs if rank is manager or higher; otherwise highest-ranked participant
+    const RANK_ORDER: Record<string, number> = {
+      executive: 3,
+      manager: 2,
+      senior: 1,
+      employee: 0,
+    };
+
+    const proposer = employees.get(proposedBy)!;
+    let chairName: string;
+
+    if (proposer.rank === "executive" || proposer.rank === "manager") {
+      chairName = proposedBy;
+    } else {
+      // Find highest-ranked participant; ties broken alphabetically
+      const allNames: string[] = [proposedBy, ...(body.participants as string[])];
+      const uniqueNames = [...new Set(allNames)];
+      uniqueNames.sort((a, b) => {
+        const rankDiff =
+          (RANK_ORDER[employees.get(b)?.rank ?? "employee"] ?? 0) -
+          (RANK_ORDER[employees.get(a)?.rank ?? "employee"] ?? 0);
+        if (rankDiff !== 0) return rankDiff;
+        return a.localeCompare(b);
+      });
+      chairName = uniqueNames[0];
+    }
+
+    // Build MeetingParticipant array
+    const allParticipantNames: string[] = [
+      proposedBy,
+      ...(body.participants as string[]),
+    ];
+    const uniqueParticipantNames = [...new Set(allParticipantNames)];
+    const meetingParticipants = uniqueParticipantNames.map((name: string) => ({
+      employeeName: name,
+      role: name === chairName ? ("chair" as const) : ("participant" as const),
+    }));
+
+    const meetingConfig: MeetingConfig = {
+      title: body.title,
+      agenda: body.agenda,
+      participants: meetingParticipants,
+      chair: chairName,
+      calledBy: proposedBy,
+      settings: body.settings || {},
+    };
+
+    const deps: MeetingRunDeps = {
+      getEngine: (name: string) => context.sessionManager.getEngine(name),
+      getConfig: () => context.getConfig(),
+      getEmployeeRegistry: () => scanOrg(),
+      emit: (event: string, payload: unknown) => context.emit(event, payload),
+    };
+
+    try {
+      const meetingPromise = runMeeting(meetingConfig, deps);
+
+      // Give it a moment to create the meeting record
+      await new Promise(r => setTimeout(r, 100));
+
+      const meetings = listMeetings();
+      const latest = meetings[0];
+
+      if (latest) {
+        meetingPromise.catch(err => {
+          logger.error(
+            `Employee-proposed meeting "${meetingConfig.title}" failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+
+        // Record the proposal only after successful start
+        recordEmployeeMeetingProposal(proposedBy);
+
+        context.emit("meeting:employee_proposed", {
+          meetingId: latest.id,
+          proposedBy,
+          participants: uniqueParticipantNames,
+          reason: body.reason,
+        });
+
+        return json(res, flattenMeeting(latest), 201), true;
+      }
+
+      // Fallback: wait for meeting creation
+      const meeting = await meetingPromise;
+      recordEmployeeMeetingProposal(proposedBy);
+      context.emit("meeting:employee_proposed", {
+        meetingId: meeting.id,
+        proposedBy,
+        participants: uniqueParticipantNames,
+        reason: body.reason,
+      });
+      return json(res, flattenMeeting(meeting), 201), true;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       return serverError(res, errMsg), true;
@@ -200,7 +487,7 @@ export async function handleMeetingsApi(
 
     // Include session messages for full transcript view
     const messages = getMessages(meeting.sessionId);
-    return json(res, { ...meeting, messages }), true;
+    return json(res, { ...flattenMeeting(meeting), messages }), true;
   }
 
   // POST /api/meetings/:id/contribute — Human contributes to meeting

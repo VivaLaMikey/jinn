@@ -1,23 +1,39 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
+import { isCircuitOpen, recordFailure, recordSuccess } from "../shared/circuitBreaker.js";
 
 interface LiveProcess {
   proc: ChildProcess;
   terminationReason: string | null;
 }
 
-/** Errors that are likely transient and worth retrying */
+/** Errors that are rate-limit related — should NOT be fast-retried at engine level */
+const RATE_LIMIT_PATTERNS = [
+  /rate.?limit/i,
+  /too many requests/i,
+  /429/,
+  /usage.*limit/i,
+  /exceeded.*limit/i,
+  /out of extra usage/i,
+];
+
+/** Errors that are genuinely transient server/network errors — safe to fast-retry */
 const TRANSIENT_PATTERNS = [
   /ECONNRESET/i,
   /ETIMEDOUT/i,
   /socket hang up/i,
+  /500/,
+  /internal.server.error/i,
   /503/,
   /529/,
   /overloaded/i,
-  /rate limit/i,
   /spawn.*EAGAIN/i,
 ];
+
+function isRateLimitError(errMsg: string): boolean {
+  return RATE_LIMIT_PATTERNS.some((pat) => pat.test(errMsg));
+}
 
 function isTransientError(stderr: string, code: number | null): boolean {
   // Exit code 1 with no meaningful stderr is often a transient crash
@@ -25,8 +41,8 @@ function isTransientError(stderr: string, code: number | null): boolean {
   return TRANSIENT_PATTERNS.some((pat) => pat.test(stderr));
 }
 
-const MAX_RETRIES = 2;
-const RETRY_BASE_MS = 1000;
+const MAX_RETRIES = 4;
+const RETRY_BASE_MS = 3000;
 
 export class ClaudeEngine implements InterruptibleEngine {
   name = "claude" as const;
@@ -61,35 +77,83 @@ export class ClaudeEngine implements InterruptibleEngine {
     let lastResult: EngineResult | undefined;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // Check circuit breaker before every attempt (including first)
+      if (isCircuitOpen()) {
+        logger.warn(`Circuit breaker open — skipping Claude attempt for session ${opts.sessionId || "unknown"}`);
+        return {
+          sessionId: opts.resumeSessionId || "",
+          result: "",
+          error: "Circuit breaker open — too many consecutive failures",
+        };
+      }
+
       if (attempt > 0) {
         const delayMs = RETRY_BASE_MS * Math.pow(2, attempt - 1);
+        const delaySec = Math.round(delayMs / 1000);
         logger.warn(
-          `Claude engine retry ${attempt}/${MAX_RETRIES} for session ${opts.sessionId || "unknown"} after ${delayMs}ms`,
+          `Claude engine transient retry ${attempt}/${MAX_RETRIES} for session ${opts.sessionId || "unknown"} after ${delayMs}ms`,
         );
         // Emit a status delta so the UI knows we're retrying
-        opts.onStream?.({ type: "status", content: `Retrying (attempt ${attempt + 1}/${MAX_RETRIES + 1})...` });
+        opts.onStream?.({ type: "status", content: `API error — retrying in ${delaySec}s (attempt ${attempt + 1}/${MAX_RETRIES + 1})...` });
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
 
       const result = await this.runOnce(opts);
       lastResult = result;
 
-      // Success or non-transient error — return immediately
-      if (!result.error) return result;
+      // Success — reset circuit breaker and return
+      if (!result.error) {
+        recordSuccess();
+        return result;
+      }
+
+      // Auto-recovery: if resume failed with 0 tokens (stale/corrupt session),
+      // drop the resume ID and retry fresh instead of looping on a dead session.
+      if (
+        opts.resumeSessionId &&
+        result.error &&
+        result.cost === 0 &&
+        (result.durationMs === undefined || result.durationMs === 0)
+      ) {
+        logger.warn(
+          `[error-class:stale-resume] Claude resume failed with 0 tokens for session ${opts.sessionId || "unknown"} ` +
+          `(engineSession: ${opts.resumeSessionId}). Clearing resume ID and retrying fresh.`,
+        );
+        opts.resumeSessionId = undefined;
+        opts.onStream?.({ type: "status", content: "Session expired — starting fresh..." });
+        continue;
+      }
 
       // If the process was intentionally killed, don't retry
       if (result.error.startsWith("Interrupted")) return result;
 
-      // Check if this is a transient failure worth retrying
+      // Rate-limit errors must NOT be fast-retried here — re-throw so the
+      // gateway/session layer handles the patient wait-until-reset strategy.
+      if (isRateLimitError(result.error)) {
+        logger.warn(
+          `[error-class:rate-limit] Claude rate limit detected for session ${opts.sessionId || "unknown"}: ${result.error.slice(0, 200)}`,
+        );
+        return result;
+      }
+
+      // Check if this is a transient server/network failure worth fast-retrying
       if (attempt < MAX_RETRIES && isTransientError(result.error, null)) {
-        logger.warn(`Transient Claude failure (attempt ${attempt + 1}): ${result.error.slice(0, 200)}`);
+        logger.warn(
+          `[error-class:transient] Transient Claude failure (attempt ${attempt + 1}/${MAX_RETRIES + 1}) for session ${opts.sessionId || "unknown"}: ${result.error.slice(0, 200)}`,
+        );
         continue;
       }
 
-      // Non-transient or final attempt — return the error
+      // Non-retryable or final attempt — record failure and return
+      logger.warn(
+        `[error-class:non-retryable] Claude failure for session ${opts.sessionId || "unknown"}: ${result.error.slice(0, 200)}`,
+      );
+      recordFailure();
       return result;
     }
 
+    // Exhausted all retries
+    recordFailure();
     return lastResult!;
   }
 

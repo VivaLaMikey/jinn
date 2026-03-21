@@ -157,7 +157,7 @@ export function PageLayout({ children }: { children: React.ReactNode }) {
     <div className="flex h-dvh overflow-hidden" style={{ background: 'var(--bg)' }}>
       <Sidebar />
       <GlobalSearch />
-      <main className="flex-1 overflow-hidden lg:ml-[56px]">
+      <main className="flex-1 flex flex-col overflow-hidden lg:ml-[56px]">
         <MobileHeader />
         {/* Desktop notification bell — top-right corner */}
         <div

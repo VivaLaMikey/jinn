@@ -5,6 +5,8 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { PID_FILE, JINN_HOME, INSTANCES_REGISTRY } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
+import { spawnRestartWatcher } from "./restart-watcher-spawner.js";
+export { spawnRestartWatcher };
 import type { JinnConfig } from "../shared/types.js";
 import { startGateway } from "./server.js";
 import { loadConfig } from "../shared/config.js";
@@ -168,7 +170,10 @@ export interface RestartResult {
  * polls for the old process to exit before starting the new one.
  */
 export async function restart(_port?: number): Promise<void> {
-  logger.info("Restart requested — sending SIGTERM to current process");
+  const port = _port ?? resolvePort();
+  logger.info("Restart requested — spawning watcher then sending SIGTERM");
+
+  spawnRestartWatcher(port);
 
   // Delay slightly so any in-flight HTTP response can be sent first
   setTimeout(() => {
@@ -207,6 +212,7 @@ export async function restartAll(): Promise<RestartResult[]> {
   // Restart self last (fire-and-forget — process will exit via SIGTERM)
   const selfName = instances.find((i) => i.port === currentPort)?.name ?? "self";
   results.push({ instance: selfName, success: true });
+  spawnRestartWatcher(currentPort);
   setTimeout(() => process.kill(process.pid, "SIGTERM"), 200);
 
   return results;

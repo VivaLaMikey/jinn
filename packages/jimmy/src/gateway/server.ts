@@ -23,6 +23,13 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
 import { scanOrg } from "./org.js";
+import {
+  loadRestartTracker,
+  canRestart,
+  recordRestart,
+  freezeSessions,
+} from "./restart-tracker.js";
+import { spawnRestartWatcher } from "./restart-watcher-spawner.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -109,6 +116,7 @@ export async function startGateway(
   // Initialize database and recover any sessions stuck from a previous run
   initDb();
   ensureFilesDir();
+  loadRestartTracker();
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
     logger.info(`Recovered ${recovered} stale session(s) — marked as "interrupted" for resume`);
@@ -247,17 +255,47 @@ export async function startGateway(
 
   // Broadcast function (defined early so apiContext can reference it)
   const wsClients = new Set<import("ws").WebSocket>();
+
+  // Sequence counter and ring buffer for missed-message replay
+  let messageSequence = 0;
+  const MESSAGE_BUFFER_SIZE = 200;
+  const messageBuffer: Array<{ seq: number; event: string; payload: unknown; ts: number; raw: string }> = [];
+
   const emit = (event: string, payload: unknown): void => {
-    const message = JSON.stringify({ event, payload, ts: Date.now() });
+    const seq = ++messageSequence;
+    const ts = Date.now();
+    let raw: string;
+
+    try {
+      raw = JSON.stringify({ event, payload, ts, seq });
+    } catch (err) {
+      logger.error(`WebSocket: failed to serialise event ${event}: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+
+    // Buffer for replay on reconnect
+    messageBuffer.push({ seq, event, payload, ts, raw });
+    if (messageBuffer.length > MESSAGE_BUFFER_SIZE) {
+      messageBuffer.shift();
+    }
+
+    // Broadcast to all connected clients; collect dead ones to remove after the loop
+    const deadClients: import("ws").WebSocket[] = [];
     for (const client of wsClients) {
-      if (client.readyState === 1) {
+      if (client.readyState === 1) { // OPEN
         try {
-          client.send(message);
+          client.send(raw);
         } catch (err) {
-          logger.warn(`WebSocket send failed, removing dead client: ${err instanceof Error ? err.message : err}`);
-          wsClients.delete(client);
+          logger.warn(`WebSocket send failed, marking client for removal: ${err instanceof Error ? err.message : err}`);
+          deadClients.push(client);
         }
+      } else if (client.readyState !== 0) { // Not CONNECTING — treat as dead
+        deadClients.push(client);
       }
+    }
+
+    for (const dc of deadClients) {
+      wsClients.delete(dc);
     }
   };
 
@@ -318,9 +356,40 @@ export async function startGateway(
     wsClients.add(ws);
     logger.info(`WebSocket client connected (${wsClients.size} total)`);
 
+    // Inform the client of the current sequence so it can detect gaps on reconnect
+    try {
+      ws.send(JSON.stringify({ event: "__sync", seq: messageSequence, ts: Date.now() }));
+    } catch (err) {
+      logger.warn(`WebSocket __sync send failed: ${err instanceof Error ? err.message : err}`);
+    }
+
+    ws.on("message", (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (msg.type === "replay" && typeof msg.lastSeq === "number") {
+          const missed = messageBuffer.filter((m) => m.seq > (msg.lastSeq as number));
+          logger.info(`WebSocket replay: sending ${missed.length} missed message(s) (from seq ${msg.lastSeq})`);
+          for (const m of missed) {
+            try {
+              if (ws.readyState === 1) {
+                ws.send(m.raw);
+              } else {
+                break;
+              }
+            } catch (err) {
+              logger.warn(`WebSocket replay send failed: ${err instanceof Error ? err.message : err}`);
+              break;
+            }
+          }
+        }
+      } catch {
+        // Ignore non-JSON or malformed messages
+      }
+    });
+
     ws.on("close", () => {
       wsClients.delete(ws);
-      logger.info(`WebSocket client disconnected (${wsClients.size} total)`);
+      logger.info(`WebSocket client disconnected (${wsClients.size} remaining)`);
     });
 
     ws.on("error", (err) => {
@@ -380,12 +449,33 @@ export async function startGateway(
       emit("skills:changed", {});
     },
     onRestartTrigger: (reason: string) => {
-      emit("gateway:restart_scheduled", { reason, countdown: 5000 });
+      const check = canRestart();
+      if (!check.allowed) {
+        logger.error(`Auto-restart blocked by circuit breaker: ${check.reason}`);
+        emit("gateway:restart_halted", { reason: check.reason });
+        return;
+      }
+      recordRestart();
+      // Freeze new session creation immediately so no sessions start during
+      // the countdown window.
+      freezeSessions(`Server restart scheduled: ${reason}`);
+      emit("gateway:sessions_frozen", {
+        reason: `Server restart scheduled: ${reason}`,
+        retryAfterMs: 10000,
+      });
+      emit("gateway:restart_scheduled", {
+        reason,
+        countdownMs: 5000,
+        estimatedDowntimeMs: 10000,
+      });
+      const watcherPort = config.gateway?.port || 7777;
+      spawnRestartWatcher(watcherPort);
+
       setTimeout(() => {
-        emit("gateway:restart_warning", { countdown: 2000 });
+        emit("gateway:restart_imminent", { reason });
         logger.info(`Auto-restart triggered: ${reason}`);
-        setTimeout(() => process.kill(process.pid, "SIGTERM"), 2000);
-      }, 5000);
+        setTimeout(() => process.kill(process.pid, "SIGTERM"), 1000);
+      }, 4000);
     },
   });
 

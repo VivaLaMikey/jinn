@@ -28,11 +28,18 @@ function ensureMeetingsTable(): void {
       current_round INTEGER NOT NULL DEFAULT 0,
       started_at TEXT,
       completed_at TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      originating_session_id TEXT
     )
   `);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meetings_session ON meetings (session_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings (status)`);
+  // Add column to existing tables that pre-date this migration
+  try {
+    db.exec(`ALTER TABLE meetings ADD COLUMN originating_session_id TEXT`);
+  } catch {
+    // Column already exists — safe to ignore
+  }
   migrated = true;
 }
 
@@ -50,6 +57,7 @@ function rowToMeeting(row: Record<string, unknown>): Meeting {
     startedAt: (row.started_at as string) ?? null,
     completedAt: (row.completed_at as string) ?? null,
     createdAt: row.created_at as string,
+    originatingSessionId: (row.originating_session_id as string) ?? null,
   };
 }
 
@@ -57,6 +65,7 @@ export function createMeeting(opts: {
   sessionId: string;
   title: string;
   config: MeetingConfig;
+  originatingSessionId?: string | null;
 }): Meeting {
   ensureMeetingsTable();
   const db = initDb();
@@ -64,9 +73,9 @@ export function createMeeting(opts: {
   const now = new Date().toISOString();
 
   db.prepare(`
-    INSERT INTO meetings (id, session_id, title, config, status, transcript, created_at)
-    VALUES (?, ?, ?, ?, 'pending', '[]', ?)
-  `).run(id, opts.sessionId, opts.title, JSON.stringify(opts.config), now);
+    INSERT INTO meetings (id, session_id, title, config, status, transcript, created_at, originating_session_id)
+    VALUES (?, ?, ?, ?, 'pending', '[]', ?, ?)
+  `).run(id, opts.sessionId, opts.title, JSON.stringify(opts.config), now, opts.originatingSessionId ?? null);
 
   return {
     id,
@@ -81,6 +90,7 @@ export function createMeeting(opts: {
     startedAt: null,
     completedAt: null,
     createdAt: now,
+    originatingSessionId: opts.originatingSessionId ?? null,
   };
 }
 
@@ -120,6 +130,7 @@ export interface UpdateMeetingFields {
   currentRound?: number;
   startedAt?: string;
   completedAt?: string;
+  originatingSessionId?: string | null;
 }
 
 export function updateMeeting(id: string, updates: UpdateMeetingFields): Meeting | undefined {
@@ -155,6 +166,10 @@ export function updateMeeting(id: string, updates: UpdateMeetingFields): Meeting
   if (updates.completedAt !== undefined) {
     sets.push("completed_at = ?");
     values.push(updates.completedAt);
+  }
+  if (updates.originatingSessionId !== undefined) {
+    sets.push("originating_session_id = ?");
+    values.push(updates.originatingSessionId);
   }
 
   if (sets.length === 0) return getMeeting(id);

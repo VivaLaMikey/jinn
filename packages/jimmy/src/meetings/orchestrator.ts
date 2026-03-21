@@ -1,7 +1,8 @@
 import { v4 as uuidv4 } from "uuid";
 import type { Engine, Employee, JinnConfig } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
-import { createSession, insertMessage, updateSession } from "../sessions/registry.js";
+import { loadConfig } from "../shared/config.js";
+import { createSession, insertMessage, updateSession, getSession } from "../sessions/registry.js";
 import { JINN_HOME } from "../shared/paths.js";
 import {
   createMeeting,
@@ -22,6 +23,8 @@ import type {
   MeetingSummary,
   Meeting,
 } from "./types.js";
+import { appendMeetingLog } from "./meetingLog.js";
+import type { MeetingLogEntry } from "./meetingLog.js";
 
 /**
  * Start and run a meeting to completion (or until it needs human input).
@@ -72,6 +75,7 @@ export async function runMeeting(
     sessionId: session.id,
     title: config.title,
     config,
+    originatingSessionId: deps.parentSessionId ?? null,
   });
 
   logger.info(`Meeting "${config.title}" created (id: ${meeting.id}, session: ${session.id})`);
@@ -304,15 +308,85 @@ export async function runMeeting(
     updateSession(session.id, { status: "idle", lastActivity: completedAt });
 
     logger.info(`Meeting "${config.title}" completed (id: ${meeting.id})`);
+
+    // Log the completed meeting
+    try {
+      const logEmployees = deps.getEmployeeRegistry();
+      const departments = [...new Set(
+        config.participants
+          .map(p => logEmployees.get(p.employeeName)?.department)
+          .filter((d): d is string => !!d),
+      )];
+      const updatedMeeting = getMeeting(meeting.id);
+      appendMeetingLog({
+        meetingId: meeting.id,
+        calledBy: config.calledBy || "unknown",
+        title: config.title,
+        participants: config.participants.map(p => p.employeeName),
+        departments,
+        agenda: config.agenda.map(a => a.topic),
+        startedAt: updatedMeeting?.startedAt ?? updatedMeeting?.createdAt ?? meeting.createdAt,
+        completedAt: completedAt,
+        durationMs: updatedMeeting?.startedAt
+          ? new Date(completedAt).getTime() - new Date(updatedMeeting.startedAt).getTime()
+          : null,
+        status: "completed",
+        outcomeSummary: summary?.keyPoints?.[0] ?? null,
+        decisions: summary?.decisions ?? [],
+        actionItems: summary?.actionItems ?? [],
+        timestamp: new Date().toISOString(),
+      });
+    } catch (logErr) {
+      logger.warn(`Failed to write meeting log: ${logErr instanceof Error ? logErr.message : String(logErr)}`);
+    }
+
     deps.emit("meeting:completed", { meetingId: meeting.id, sessionId: session.id, summary });
 
-    return getMeeting(meeting.id)!;
+    const completedMeeting = getMeeting(meeting.id)!;
+    await handleMeetingCompletion(completedMeeting, summary, summaryText, deps);
+    return completedMeeting;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     logger.error(`Meeting ${meeting.id} failed: ${errMsg}`);
     updateMeeting(meeting.id, { status: "cancelled", transcript: [...transcript] });
     updateSession(session.id, { status: "error", lastActivity: new Date().toISOString(), lastError: errMsg });
+
+    // Log the failed/cancelled meeting
+    try {
+      const logEmployees = deps.getEmployeeRegistry();
+      const departments = [...new Set(
+        config.participants
+          .map(p => logEmployees.get(p.employeeName)?.department)
+          .filter((d): d is string => !!d),
+      )];
+      const failedMeeting = getMeeting(meeting.id);
+      appendMeetingLog({
+        meetingId: meeting.id,
+        calledBy: config.calledBy || "unknown",
+        title: config.title,
+        participants: config.participants.map(p => p.employeeName),
+        departments,
+        agenda: config.agenda.map(a => a.topic),
+        startedAt: failedMeeting?.startedAt ?? meeting.createdAt,
+        completedAt: new Date().toISOString(),
+        durationMs: failedMeeting?.startedAt
+          ? Date.now() - new Date(failedMeeting.startedAt).getTime()
+          : null,
+        status: "cancelled",
+        outcomeSummary: `Meeting failed: ${errMsg}`,
+        decisions: [],
+        actionItems: [],
+        timestamp: new Date().toISOString(),
+      });
+    } catch (logErr) {
+      logger.warn(`Failed to write meeting log: ${logErr instanceof Error ? logErr.message : String(logErr)}`);
+    }
+
     deps.emit("meeting:error", { meetingId: meeting.id, error: errMsg });
+    const cancelledMeeting = getMeeting(meeting.id);
+    if (cancelledMeeting) {
+      await handleMeetingCancellation(cancelledMeeting, errMsg, deps);
+    }
     throw err;
   }
 }
@@ -350,4 +424,107 @@ function formatSummaryForDisplay(title: string, summary: MeetingSummary): string
   }
 
   return lines.join("\n");
+}
+
+async function handleMeetingCompletion(
+  meeting: Meeting,
+  summary: MeetingSummary | null,
+  summaryText: string,
+  deps: MeetingRunDeps,
+): Promise<void> {
+  try {
+    let port = 7777;
+    try {
+      const config = loadConfig();
+      port = config.gateway?.port || 7777;
+    } catch { }
+
+    const calledBy = meeting.config.calledBy;
+    const parentSession = meeting.originatingSessionId
+      ? getSession(meeting.originatingSessionId)
+      : null;
+    const parentAlive = parentSession != null && parentSession.status !== "error";
+
+    if (parentAlive && meeting.originatingSessionId) {
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/sessions/${meeting.originatingSessionId}/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: summaryText, role: "notification" }),
+        });
+      } catch (err) {
+        logger.warn(`handleMeetingCompletion: failed to send session message: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (calledBy === "jinn" || !parentAlive) {
+      const decisions = summary?.decisions.length
+        ? summary.decisions.map(d => `• ${d}`).join("\n")
+        : "None";
+      const actionItems = summary?.actionItems.length
+        ? summary.actionItems.map(a => `• ${a.description} → ${a.assignee}`).join("\n")
+        : "None";
+      const discordMessage = `📋 Meeting completed: "${meeting.title}"\n\nDecisions:\n${decisions}\n\nAction Items:\n${actionItems}`;
+
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/connectors/discord/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: "1482238646869557409", text: discordMessage }),
+        });
+      } catch (err) {
+        logger.warn(`handleMeetingCompletion: failed to send Discord notification: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  } catch (err) {
+    logger.warn(`handleMeetingCompletion: unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function handleMeetingCancellation(
+  meeting: Meeting,
+  errorMessage: string,
+  deps: MeetingRunDeps,
+): Promise<void> {
+  try {
+    let port = 7777;
+    try {
+      const config = loadConfig();
+      port = config.gateway?.port || 7777;
+    } catch { }
+
+    const calledBy = meeting.config.calledBy;
+    const parentSession = meeting.originatingSessionId
+      ? getSession(meeting.originatingSessionId)
+      : null;
+    const parentAlive = parentSession != null && parentSession.status !== "error";
+
+    const cancellationMessage = `⚠️ Meeting cancelled: "${meeting.title}"\nReason: ${errorMessage}`;
+
+    if (parentAlive && meeting.originatingSessionId) {
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/sessions/${meeting.originatingSessionId}/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: cancellationMessage, role: "notification" }),
+        });
+      } catch (err) {
+        logger.warn(`handleMeetingCancellation: failed to send session message: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (calledBy === "jinn" || !parentAlive) {
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/connectors/discord/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: "1482238646869557409", text: cancellationMessage }),
+        });
+      } catch (err) {
+        logger.warn(`handleMeetingCancellation: failed to send Discord notification: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  } catch (err) {
+    logger.warn(`handleMeetingCancellation: unexpected error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

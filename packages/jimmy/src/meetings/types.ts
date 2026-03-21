@@ -55,6 +55,15 @@ export interface MeetingSummary {
 
 export type MeetingStatus = "pending" | "in_progress" | "awaiting_human" | "completed" | "cancelled";
 
+/**
+ * Meeting — stored shape.
+ *
+ * NOTE: The API layer (api.ts flattenMeeting) spreads config fields
+ * (agenda, participants, chair, settings, calledBy) to the top level
+ * before sending responses. The frontend contract is maintained in
+ * packages/web/src/app/meetings/page.tsx (Meeting interface).
+ * Keep both in sync when changing this type.
+ */
 export interface Meeting {
   id: string;
   sessionId: string;
@@ -68,6 +77,7 @@ export interface Meeting {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  originatingSessionId?: string | null;  // session that created this meeting, for completion callback
 }
 
 export interface MeetingRunDeps {
