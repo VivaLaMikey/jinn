@@ -1,6 +1,8 @@
 "use client"
 
+import { useState, useEffect } from "react"
 import type { Employee } from "@/lib/api"
+import { api } from "@/lib/api"
 import { Card, CardContent } from "@/components/ui/card"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 
@@ -19,6 +21,15 @@ function EmployeeCard({
   selected: boolean
   onSelect: () => void
 }) {
+  const [hasPip, setHasPip] = useState(false)
+
+  useEffect(() => {
+    if (employee.rank === 'executive') return
+    api.getPip(employee.name).then((p: any) => {
+      setHasPip(p && p.status && (p.status === 'active' || p.status === 'extended'))
+    }).catch(() => {})
+  }, [employee.name, employee.rank])
+
   return (
     <button
       onClick={onSelect}
@@ -30,6 +41,9 @@ function EmployeeCard({
       }}
     >
       <EmployeeAvatar name={employee.name} size={28} />
+      {hasPip && (
+        <span title="On PIP" className="shrink-0 w-2 h-2 rounded-full bg-[var(--system-orange,#f59e0b)] animate-pulse" />
+      )}
       <div className="flex-1 min-w-0">
         <div className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] whitespace-nowrap overflow-hidden text-ellipsis leading-[var(--leading-tight)]">
           {employee.displayName || employee.name}

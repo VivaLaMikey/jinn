@@ -85,6 +85,8 @@ function ChatPage() {
   const { settings } = useSettings()
   const portalName = settings.portalName ?? 'Jinn'
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const selectedIdRef = useRef(selectedId)
+  useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('sidebar')
   const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string; title?: string; employee?: string } | null>(null)
   // Sibling sessions for the currently selected employee (empty if direct/single session)
@@ -182,7 +184,6 @@ function ChatPage() {
     })
   }
 
-  // Update tab label/status when session meta changes
   const { updateTabStatus } = chatTabs
   useEffect(() => {
     return subscribe((event, payload) => {
@@ -190,162 +191,20 @@ function ChatPage() {
       const sid = selectedIdRef.current
       if (!sid || p.sessionId !== sid) return
 
-      if (event === 'session:delta') {
-        const deltaType = String(p.type || 'text')
-
-        if (deltaType === 'text') {
-          const chunk = String(p.content || '')
-          streamingTextRef.current += chunk
-          setStreamingText(streamingTextRef.current)
-        } else if (deltaType === 'text_snapshot') {
-          // Full text snapshot from assistant partial message — replace streaming text
-          // to correct any dropped deltas
-          const snapshot = String(p.content || '')
-          if (snapshot.length >= streamingTextRef.current.length) {
-            streamingTextRef.current = snapshot
-            setStreamingText(snapshot)
-          }
-        } else if (deltaType === 'tool_use') {
-          // If we were streaming text, flush it as a message first
-          if (streamingTextRef.current) {
-            const flushed = streamingTextRef.current
-            streamingTextRef.current = ''
-            setStreamingText('')
-            setMessages((prev) => {
-              if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
-              const updated = [
-                ...prev,
-                {
-                  id: crypto.randomUUID(),
-                  role: 'assistant' as const,
-                  content: flushed,
-                  timestamp: Date.now(),
-                },
-              ]
-              persistIntermediate(updated, sid)
-              return updated
-            })
-          }
-          const toolName = String(p.toolName || 'tool')
-          setMessages((prev) => {
-            if (intermediateStartRef.current < 0) intermediateStartRef.current = prev.length
-            const updated = [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                role: 'assistant' as const,
-                content: `Using ${toolName}`,
-                timestamp: Date.now(),
-                toolCall: toolName,
-              },
-            ]
-            persistIntermediate(updated, sid)
-            return updated
-          })
-        } else if (deltaType === 'tool_result') {
-          setMessages((prev) => {
-            const updated = [...prev]
-            const last = updated[updated.length - 1]
-            if (last && last.role === 'assistant' && last.toolCall) {
-              updated[updated.length - 1] = { ...last, content: `Used ${last.toolCall}` }
-            }
-            persistIntermediate(updated, sid)
-            return updated
-          })
-        }
-      }
-
-      if (event === 'session:message') {
-        const role = String(p.role || '')
-        const content = String(p.content || '')
-        if (role === 'user' || role === 'assistant') {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: role as 'user' | 'assistant',
-              content,
-              timestamp: Date.now(),
-            },
-          ])
-        }
-      }
-
-      if (event === 'session:notification') {
-        // Internal notification (e.g. child session completed) — display as a system notification
-        const notifMessage = String(p.message || '')
-        if (notifMessage) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'notification' as const,
-              content: notifMessage,
-              timestamp: Date.now(),
-            },
-          ])
-        }
-      }
-
-      if (event === 'session:interrupted') {
-        // Engine was interrupted — clear streaming, wait for new turn
-        streamingTextRef.current = ''
-        setStreamingText('')
-      }
-
-      if (event === 'session:stopped') {
-        setLoading(false)
-        setStreamingText('')
-      }
-
       if (event === 'session:completed') {
-        // Clear streaming state
-        streamingTextRef.current = ''
-        setStreamingText('')
-        setLoading(false)
-        intermediateStartRef.current = -1
+        // Refresh sidebar when a session completes
+        qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+      }
 
-        // Clear intermediate messages from localStorage (keep showing in UI)
-        const completedSessionId = sid || (p.sessionId ? String(p.sessionId) : null)
-        if (completedSessionId) {
-          clearIntermediateMessages(completedSessionId)
-        }
+      if (event === 'session:delta') {
+        updateTabStatus(sid, { status: 'running' })
+      }
 
-        if (p.result) {
-          // Replace any partially-streamed message with the final complete result
-          setMessages((prev) => {
-            // Remove trailing non-tool assistant message if it was from streaming
-            const cleaned = [...prev]
-            const last = cleaned[cleaned.length - 1]
-            if (last && last.role === 'assistant' && !last.toolCall) {
-              cleaned.pop()
-            }
-            return [
-              ...cleaned,
-              {
-                id: crypto.randomUUID(),
-                role: 'assistant' as const,
-                content: String(p.result),
-                timestamp: Date.now(),
-              },
-            ]
-          })
-        }
-        if (p.error && !p.result) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: `Error: ${p.error}`,
-              timestamp: Date.now(),
-            },
-          ])
-        }
-        setRefreshKey((k) => k + 1)
+      if (event === 'session:completed' || event === 'session:stopped') {
+        updateTabStatus(sid, { status: 'idle' })
       }
     })
-  }, [selectedId, subscribe, setMessages, setLoading, setStreamingText, setRefreshKey])
+  }, [subscribe, updateTabStatus, qc])
 
   // Update tab label/status when session meta changes
   useEffect(() => {

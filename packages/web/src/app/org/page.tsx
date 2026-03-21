@@ -34,6 +34,12 @@ export default function OrgPage() {
   const closeRef = useRef<HTMLButtonElement>(null);
   const { settings } = useSettings();
 
+  const [activePips, setActivePips] = useState<any[]>([])
+
+  useEffect(() => {
+    api.listActivePips().then(setActivePips).catch(() => {})
+  }, [])
+
   const loadData = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -118,6 +124,19 @@ export default function OrgPage() {
 
   return (
     <PageLayout>
+      {activePips.length > 0 && (
+        <div className="shrink-0 px-[var(--space-4)] py-[var(--space-2)] border-b border-[var(--separator)]" style={{ background: 'color-mix(in srgb, var(--system-orange, #f59e0b) 8%, transparent)' }}>
+          <div className="flex items-center gap-[var(--space-2)]">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--system-orange, #f59e0b)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)]" style={{ color: 'var(--system-orange, #f59e0b)' }}>
+              {activePips.length} Active PIP{activePips.length !== 1 ? 's' : ''}
+            </span>
+            <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]">
+              {activePips.map((p: any) => p.employeeName).join(', ')}
+            </span>
+          </div>
+        </div>
+      )}
       <div className="flex h-full relative bg-[var(--bg)]">
         {/* Main content area */}
         <div className="flex-1 h-full relative">

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import type { Employee } from "@/lib/api";
 import { EmployeeAvatar } from "@/components/ui/employee-avatar";
@@ -45,6 +45,229 @@ function RankBadge({ rank }: { rank: string }) {
       {rank}
     </span>
   );
+}
+
+function PipSection({ name, isExecutive }: { name: string; isExecutive: boolean }) {
+  const [pip, setPip] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [formData, setFormData] = useState({ reason: '', expectations: '', reviewDate: '' })
+  const [saving, setSaving] = useState(false)
+
+  const fetchPip = useCallback(async () => {
+    try {
+      const data = await api.getPip(name)
+      setPip(data)
+    } catch { setPip(null) }
+    finally { setLoading(false) }
+  }, [name])
+
+  useEffect(() => { fetchPip() }, [fetchPip])
+
+  const handleCreate = async () => {
+    if (!formData.reason) return
+    setSaving(true)
+    try {
+      const created = await api.createPip(name, formData)
+      setPip(created)
+      setShowForm(false)
+      setFormData({ reason: '', expectations: '', reviewDate: '' })
+    } catch { }
+    finally { setSaving(false) }
+  }
+
+  const handleStatusChange = async (status: string) => {
+    setSaving(true)
+    try {
+      const updated = await api.updatePip(name, { status })
+      setPip(updated)
+    } catch { }
+    finally { setSaving(false) }
+  }
+
+  const handleExtend = async () => {
+    const newDate = prompt('New review date (YYYY-MM-DD):')
+    if (!newDate) return
+    setSaving(true)
+    try {
+      const updated = await api.updatePip(name, { reviewDate: newDate, status: 'extended' })
+      setPip(updated)
+    } catch { }
+    finally { setSaving(false) }
+  }
+
+  const handleDelete = async () => {
+    if (!confirm('Remove this PIP entirely?')) return
+    setSaving(true)
+    try {
+      await api.deletePip(name)
+      setPip(null)
+    } catch { }
+    finally { setSaving(false) }
+  }
+
+  if (loading) return null
+  if (isExecutive) return null
+
+  const statusColors: Record<string, { bg: string; text: string }> = {
+    active: { bg: 'color-mix(in srgb, var(--system-orange, #f59e0b) 15%, transparent)', text: 'var(--system-orange, #f59e0b)' },
+    completed: { bg: 'color-mix(in srgb, var(--system-green) 15%, transparent)', text: 'var(--system-green)' },
+    extended: { bg: 'color-mix(in srgb, var(--system-orange, #f59e0b) 15%, transparent)', text: 'var(--system-orange, #f59e0b)' },
+    terminated: { bg: 'color-mix(in srgb, var(--system-red) 15%, transparent)', text: 'var(--system-red)' },
+  }
+
+  const outcomeColors: Record<string, { bg: string; text: string }> = {
+    pass: { bg: 'color-mix(in srgb, var(--system-green) 15%, transparent)', text: 'var(--system-green)' },
+    fail: { bg: 'color-mix(in srgb, var(--system-red) 15%, transparent)', text: 'var(--system-red)' },
+    partial: { bg: 'color-mix(in srgb, var(--system-orange, #f59e0b) 15%, transparent)', text: 'var(--system-orange, #f59e0b)' },
+  }
+
+  if (!pip) {
+    return (
+      <div>
+        {!showForm ? (
+          <button
+            onClick={() => setShowForm(true)}
+            className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] bg-none border border-dashed border-[var(--separator)] rounded-[var(--radius-md,12px)] px-[var(--space-4)] py-[var(--space-3)] cursor-pointer w-full hover:border-[var(--system-orange,#f59e0b)] hover:text-[var(--system-orange,#f59e0b)] transition-colors"
+          >
+            + Create Performance Improvement Plan
+          </button>
+        ) : (
+          <div className="rounded-[var(--radius-lg,16px)] border border-[var(--separator)] bg-[var(--material-regular)] p-[var(--space-5)]">
+            <h3 className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] mb-[var(--space-4)] mt-0">Create PIP</h3>
+            <div className="flex flex-col gap-[var(--space-3)]">
+              <div>
+                <label className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-1)] block">Reason</label>
+                <textarea
+                  value={formData.reason}
+                  onChange={e => setFormData(d => ({ ...d, reason: e.target.value }))}
+                  className="w-full rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-[var(--bg)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-body)] text-[var(--text-primary)] resize-none"
+                  rows={2}
+                  placeholder="Why is this PIP being created?"
+                />
+              </div>
+              <div>
+                <label className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-1)] block">Expectations</label>
+                <textarea
+                  value={formData.expectations}
+                  onChange={e => setFormData(d => ({ ...d, expectations: e.target.value }))}
+                  className="w-full rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-[var(--bg)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-body)] text-[var(--text-primary)] resize-none"
+                  rows={2}
+                  placeholder="What must improve?"
+                />
+              </div>
+              <div>
+                <label className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-1)] block">Review Date</label>
+                <input
+                  type="date"
+                  value={formData.reviewDate}
+                  onChange={e => setFormData(d => ({ ...d, reviewDate: e.target.value }))}
+                  className="w-full rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-[var(--bg)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-body)] text-[var(--text-primary)]"
+                />
+              </div>
+              <div className="flex gap-[var(--space-2)] justify-end mt-[var(--space-2)]">
+                <button onClick={() => setShowForm(false)} className="px-[var(--space-3)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-transparent text-[var(--text-secondary)] text-[length:var(--text-caption1)] cursor-pointer">Cancel</button>
+                <button onClick={handleCreate} disabled={saving || !formData.reason} className="px-[var(--space-3)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] border-none bg-[var(--system-orange,#f59e0b)] text-white text-[length:var(--text-caption1)] cursor-pointer disabled:opacity-50">
+                  {saving ? 'Creating...' : 'Create PIP'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const sc = statusColors[pip.status] || statusColors.active
+
+  return (
+    <div className="rounded-[var(--radius-lg,16px)] border border-[var(--separator)] bg-[var(--material-regular)] p-[var(--space-5)]" style={{ borderColor: sc.text, borderWidth: '1.5px' }}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-[var(--space-4)]">
+        <div className="flex items-center gap-[var(--space-2)]">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sc.text} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <h3 className="text-[length:var(--text-body)] font-[var(--weight-bold)] m-0" style={{ color: sc.text }}>Performance Improvement Plan</h3>
+        </div>
+        <span className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] px-[10px] py-[2px] rounded-[10px] uppercase" style={{ background: sc.bg, color: sc.text }}>{pip.status}</span>
+      </div>
+
+      {/* Details */}
+      <div className="flex flex-col gap-[var(--space-3)] mb-[var(--space-4)]">
+        <div>
+          <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-1)]">Reason</p>
+          <p className="text-[length:var(--text-body)] text-[var(--text-primary)] m-0">{pip.reason}</p>
+        </div>
+        {pip.expectations && (
+          <div>
+            <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-1)]">Expectations</p>
+            <p className="text-[length:var(--text-body)] text-[var(--text-primary)] m-0">{pip.expectations}</p>
+          </div>
+        )}
+        <div className="flex gap-[var(--space-4)]">
+          <div>
+            <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-1)]">Start Date</p>
+            <p className="text-[length:var(--text-body)] text-[var(--text-primary)] m-0">{pip.startDate}</p>
+          </div>
+          {pip.reviewDate && (
+            <div>
+              <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-1)]">Review Date</p>
+              <p className="text-[length:var(--text-body)] text-[var(--text-primary)] m-0">{pip.reviewDate}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Task Log */}
+      {pip.taskLog && pip.taskLog.length > 0 && (
+        <div className="mb-[var(--space-4)]">
+          <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-2)]">Task Log</p>
+          <div className="rounded-[var(--radius-md,12px)] border border-[var(--separator)] overflow-hidden">
+            {pip.taskLog.map((t: any, i: number) => {
+              const oc = outcomeColors[t.outcome] || outcomeColors.partial
+              return (
+                <div key={i} className={`px-[var(--space-3)] py-[var(--space-2)] flex items-center gap-[var(--space-3)] text-[length:var(--text-caption1)]${i > 0 ? ' border-t border-[var(--separator)]' : ''}`}>
+                  <span className="text-[var(--text-tertiary)] shrink-0 w-[70px]">{new Date(t.date).toLocaleDateString()}</span>
+                  <span className="px-[6px] py-px rounded-[6px] text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase shrink-0" style={{ background: oc.bg, color: oc.text }}>{t.outcome}</span>
+                  <span className="text-[var(--text-secondary)] truncate">{t.notes}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* History */}
+      {pip.history && pip.history.length > 0 && (
+        <div className="mb-[var(--space-4)]">
+          <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-[var(--space-2)]">History</p>
+          <div className="flex flex-col gap-[var(--space-1)]">
+            {pip.history.map((h: any, i: number) => (
+              <div key={i} className="flex items-start gap-[var(--space-2)] text-[length:var(--text-caption1)]">
+                <span className="text-[var(--text-quaternary)] shrink-0">{new Date(h.date).toLocaleDateString()}</span>
+                <span className="text-[var(--text-tertiary)]">{h.action}:</span>
+                <span className="text-[var(--text-secondary)]">{h.detail}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      {pip.status === 'active' || pip.status === 'extended' ? (
+        <div className="flex gap-[var(--space-2)] pt-[var(--space-3)] border-t border-[var(--separator)]">
+          <button onClick={handleExtend} disabled={saving} className="px-[var(--space-3)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-transparent text-[var(--text-secondary)] text-[length:var(--text-caption1)] cursor-pointer hover:bg-[var(--fill-quaternary)]">Extend</button>
+          <button onClick={() => handleStatusChange('completed')} disabled={saving} className="px-[var(--space-3)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] border-none bg-[var(--system-green)] text-white text-[length:var(--text-caption1)] cursor-pointer">Resolve</button>
+          <button onClick={() => handleStatusChange('terminated')} disabled={saving} className="px-[var(--space-3)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] border-none bg-[var(--system-red)] text-white text-[length:var(--text-caption1)] cursor-pointer">Terminate</button>
+          <button onClick={handleDelete} disabled={saving} className="ml-auto px-[var(--space-3)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-transparent text-[var(--text-quaternary)] text-[length:var(--text-caption1)] cursor-pointer hover:text-[var(--system-red)]">Remove</button>
+        </div>
+      ) : (
+        <div className="flex gap-[var(--space-2)] pt-[var(--space-3)] border-t border-[var(--separator)]">
+          <span className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">PIP {pip.status}</span>
+          <button onClick={handleDelete} disabled={saving} className="ml-auto px-[var(--space-3)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-transparent text-[var(--text-quaternary)] text-[length:var(--text-caption1)] cursor-pointer hover:text-[var(--system-red)]">Remove</button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?: Employee }) {
@@ -195,6 +418,9 @@ export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?
           </div>
         )}
       </div>
+
+      {/* PIP Section */}
+      <PipSection name={name} isExecutive={rank === 'executive'} />
 
       {/* Recent Sessions */}
       <div>

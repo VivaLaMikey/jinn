@@ -36,6 +36,7 @@ import {
   LOGS_DIR,
   TMP_DIR,
   FILES_DIR,
+  PIPS_FILE,
 } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
@@ -270,6 +271,45 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
     }
   }
   return result;
+}
+
+interface PipTaskLogEntry {
+  taskId: string;
+  date: string;
+  outcome: 'pass' | 'fail' | 'partial';
+  notes: string;
+}
+
+interface PipHistoryEntry {
+  date: string;
+  action: string;
+  detail: string;
+}
+
+interface PipEntry {
+  employeeName: string;
+  reason: string;
+  expectations: string;
+  startDate: string;
+  reviewDate: string;
+  status: 'active' | 'completed' | 'extended' | 'terminated';
+  taskLog: PipTaskLogEntry[];
+  history: PipHistoryEntry[];
+}
+
+function loadPips(): Record<string, PipEntry> {
+  if (!fs.existsSync(PIPS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(PIPS_FILE, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function savePips(pips: Record<string, any>): void {
+  const dir = path.dirname(PIPS_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(PIPS_FILE, JSON.stringify(pips, null, 2));
 }
 
 function matchRoute(
@@ -978,6 +1018,100 @@ export async function handleApiRequest(
         }
       }
       return json(res, { departments, employees });
+    }
+
+    // GET /api/org/pips — list all active PIPs
+    if (method === "GET" && pathname === "/api/org/pips") {
+      const pips = loadPips();
+      const active = Object.values(pips).filter((p: any) => p.status === "active");
+      return json(res, active);
+    }
+
+    // POST /api/org/employees/:name/pip — create PIP
+    params = matchRoute("/api/org/employees/:name/pip", pathname);
+    if (method === "POST" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as any;
+      const pips = loadPips();
+      if (pips[params.name] && pips[params.name].status === "active") {
+        return badRequest(res, "Employee already has an active PIP");
+      }
+      const pip: PipEntry = {
+        employeeName: params.name,
+        reason: body.reason || "",
+        expectations: body.expectations || "",
+        startDate: body.startDate || new Date().toISOString().slice(0, 10),
+        reviewDate: body.reviewDate || "",
+        status: "active",
+        taskLog: [],
+        history: [{ date: new Date().toISOString(), action: "created", detail: body.reason || "PIP created" }],
+      };
+      pips[params.name] = pip;
+      savePips(pips);
+      logger.info(`PIP created for ${params.name}`);
+      return json(res, pip);
+    }
+
+    // GET /api/org/employees/:name/pip — get PIP for employee
+    params = matchRoute("/api/org/employees/:name/pip", pathname);
+    if (method === "GET" && params) {
+      const pips = loadPips();
+      const pip = pips[params.name];
+      if (!pip) return json(res, null);
+      return json(res, pip);
+    }
+
+    // PUT /api/org/employees/:name/pip — update PIP
+    params = matchRoute("/api/org/employees/:name/pip", pathname);
+    if (method === "PUT" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as any;
+      const pips = loadPips();
+      const pip = pips[params.name];
+      if (!pip) return notFound(res);
+
+      if (body.taskOutcome) {
+        pip.taskLog.push({
+          taskId: body.taskOutcome.taskId || Date.now().toString(36),
+          date: new Date().toISOString(),
+          outcome: body.taskOutcome.outcome || "partial",
+          notes: body.taskOutcome.notes || "",
+        });
+        pip.history.push({ date: new Date().toISOString(), action: "task_logged", detail: `${body.taskOutcome.outcome}: ${body.taskOutcome.notes || ""}` });
+      }
+
+      if (body.status && ["active", "completed", "extended", "terminated"].includes(body.status)) {
+        pip.status = body.status;
+        pip.history.push({ date: new Date().toISOString(), action: "status_changed", detail: `Status changed to ${body.status}` });
+      }
+
+      if (body.reviewDate) {
+        pip.reviewDate = body.reviewDate;
+        pip.history.push({ date: new Date().toISOString(), action: "extended", detail: `Review date changed to ${body.reviewDate}` });
+      }
+
+      if (body.expectations) {
+        pip.expectations = body.expectations;
+      }
+
+      pips[params.name] = pip;
+      savePips(pips);
+      logger.info(`PIP updated for ${params.name}`);
+      return json(res, pip);
+    }
+
+    // DELETE /api/org/employees/:name/pip — resolve/remove PIP
+    params = matchRoute("/api/org/employees/:name/pip", pathname);
+    if (method === "DELETE" && params) {
+      const pips = loadPips();
+      const pip = pips[params.name];
+      if (!pip) return notFound(res);
+      delete pips[params.name];
+      savePips(pips);
+      logger.info(`PIP removed for ${params.name}`);
+      return json(res, { status: "ok", removed: params.name });
     }
 
     // GET /api/org/employees/:name

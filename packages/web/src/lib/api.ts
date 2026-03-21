@@ -195,6 +195,10 @@ export const api = {
       `/api/sessions/${sessionId}/compact`,
       {},
     ),
+  getUsage: () =>
+    get<{ utilization?: number; resetsAt?: string | null; fetchedAt?: number; pacingExceeded?: boolean; nearLimit?: boolean; error?: string | null; status?: string; reason?: string }>(
+      "/api/usage",
+    ),
   uploadFile: async (file: File): Promise<UploadedFile> => {
     const form = new FormData()
     form.append('file', file)
@@ -202,4 +206,15 @@ export const api = {
     if (!res.ok) throw new Error(await extractErrorMessage(res))
     return res.json()
   },
+  // PIP endpoints
+  getPip: (name: string) =>
+    get<any>(`/api/org/employees/${name}/pip`),
+  createPip: (name: string, data: { reason: string; expectations: string; reviewDate: string }) =>
+    post<any>(`/api/org/employees/${name}/pip`, data),
+  updatePip: (name: string, data: any) =>
+    put<any>(`/api/org/employees/${name}/pip`, data),
+  deletePip: (name: string) =>
+    del<any>(`/api/org/employees/${name}/pip`),
+  listActivePips: () =>
+    get<any[]>(`/api/org/pips`),
 };

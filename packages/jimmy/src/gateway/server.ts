@@ -49,6 +49,24 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
+/**
+ * Serve an HTML file with injected extension scripts.
+ * Reads the file, injects <script src="/jinn-extensions.js"></script> before </body>,
+ * and writes the modified content to the response.
+ */
+function serveHtmlWithExtensions(res: http.ServerResponse, filePath: string): void {
+  const html = fs.readFileSync(filePath, "utf-8");
+  const injected = html.replace(
+    "</body>",
+    '<script src="/jinn-extensions.js"></script></body>',
+  );
+  res.writeHead(200, {
+    "Content-Type": "text/html",
+    "Content-Length": Buffer.byteLength(injected),
+  });
+  res.end(injected);
+}
+
 function serveStatic(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -76,22 +94,24 @@ function serveStatic(
       ? path.join(resolved, "index.html")
       : resolved + ".html";
     if (fs.existsSync(htmlPath) && !fs.statSync(htmlPath).isDirectory()) {
-      res.writeHead(200, { "Content-Type": "text/html" });
-      fs.createReadStream(htmlPath).pipe(res);
+      serveHtmlWithExtensions(res, htmlPath);
       return true;
     }
 
     // SPA fallback: serve index.html for non-API, non-WS routes
     const indexPath = path.join(webDir, "index.html");
     if (fs.existsSync(indexPath)) {
-      res.writeHead(200, { "Content-Type": "text/html" });
-      fs.createReadStream(indexPath).pipe(res);
+      serveHtmlWithExtensions(res, indexPath);
       return true;
     }
     return false;
   }
 
   const ext = path.extname(resolved);
+  if (ext === ".html") {
+    serveHtmlWithExtensions(res, resolved);
+    return true;
+  }
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
   res.writeHead(200, { "Content-Type": contentType });
   fs.createReadStream(resolved).pipe(res);

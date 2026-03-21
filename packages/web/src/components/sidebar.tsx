@@ -15,6 +15,7 @@ import { THEMES } from "@/lib/themes"
 import { NAV_ITEMS } from "@/lib/nav"
 import type { ThemeId } from "@/lib/themes"
 import { cn } from "@/lib/utils"
+import { api } from "@/lib/api"
 
 // ---------------------------------------------------------------------------
 // Theme icon helper
@@ -29,6 +30,72 @@ function ThemeIcon({ theme }: { theme: ThemeId }) {
     default:
       return <Palette size={18} />
   }
+}
+
+// ---------------------------------------------------------------------------
+// Usage indicator
+// ---------------------------------------------------------------------------
+
+function UsageIndicator({ hovered }: { hovered: boolean }) {
+  const [usage, setUsage] = useState<{ utilization: number; resetsAt: string | null } | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    const fetchUsage = async () => {
+      try {
+        const data = await api.getUsage()
+        if (!mounted) return
+        if (data.status === 'unavailable' || data.utilization === undefined) {
+          setUsage(null)
+          return
+        }
+        setUsage({ utilization: data.utilization, resetsAt: data.resetsAt ?? null })
+      } catch {
+        if (mounted) setUsage(null)
+      }
+    }
+    fetchUsage()
+    const interval = setInterval(fetchUsage, 60_000)
+    return () => { mounted = false; clearInterval(interval) }
+  }, [])
+
+  if (!usage) return null
+
+  const pct = Math.round(usage.utilization)
+  const color = pct < 50 ? 'var(--system-green)' : pct < 75 ? 'var(--system-orange, #f59e0b)' : 'var(--system-red)'
+
+  let resetLabel = ''
+  if (usage.resetsAt) {
+    const diff = new Date(usage.resetsAt).getTime() - Date.now()
+    if (diff > 0) {
+      const mins = Math.round(diff / 60_000)
+      resetLabel = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
+    }
+  }
+
+  return (
+    <div className="px-2 pt-1">
+      <div className="flex h-10 w-full items-center gap-2.5 rounded-md px-3 text-[13px] text-muted-foreground">
+        <div className="relative h-1.5 w-5 shrink-0 overflow-hidden rounded-full bg-[var(--fill-tertiary)]">
+          <div
+            className="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
+            style={{ width: `${Math.min(pct, 100)}%`, background: color }}
+          />
+        </div>
+        <span className={cn(
+          "whitespace-nowrap transition-opacity duration-200",
+          hovered ? "opacity-100" : "opacity-0"
+        )}>
+          <span style={{ color }}>{pct}%</span>
+          {resetLabel && (
+            <span className="ml-1.5 text-[11px] text-[var(--text-quaternary)]">
+              resets {resetLabel}
+            </span>
+          )}
+        </span>
+      </div>
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +215,8 @@ export function Sidebar() {
           )}
         </div>
       )}
+
+      <UsageIndicator hovered={hovered} />
 
       <div className="shrink-0 px-2 pb-3 pt-2">
         <button
