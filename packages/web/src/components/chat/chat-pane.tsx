@@ -448,6 +448,29 @@ export function ChatPane({
     intermediateStartRef.current = -1
   }, [])
 
+  const [compacting, setCompacting] = useState(false)
+  const [compactNotice, setCompactNotice] = useState<string | null>(null)
+
+  const handleCompact = useCallback(async () => {
+    if (!sessionId || compacting) return
+    setCompacting(true)
+    setCompactNotice(null)
+    try {
+      const result = await api.compactSession(sessionId)
+      if (result.originalCount <= 5) {
+        setCompactNotice('Nothing to compact — fewer than 6 messages.')
+      } else {
+        setCompactNotice(`Compacted ${result.originalCount} messages \u2192 summary + ${result.originalCount - result.compactedCount + 1} recent`)
+        await loadSession(sessionId)
+      }
+    } catch (err) {
+      setCompactNotice(`Compact failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setCompacting(false)
+      setTimeout(() => setCompactNotice(null), 5000)
+    }
+  }, [sessionId, compacting, loadSession])
+
   // Drag & drop state
   const [dragOver, setDragOver] = useState(false)
   const [droppedFiles, setDroppedFiles] = useState<File[]>()
@@ -540,6 +563,58 @@ export function ChatPane({
           </div>
         </div>
       )}
+      {/* Compact context bar */}
+      {sessionId && messages.length > 0 && viewMode === 'chat' && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: '8px',
+            padding: '4px 12px',
+            borderBottom: '1px solid var(--border)',
+            background: 'var(--bg-secondary)',
+            flexShrink: 0,
+          }}
+        >
+          {compactNotice && (
+            <span style={{ fontSize: '11px', color: 'var(--text-secondary)', flex: 1 }}>
+              {compactNotice}
+            </span>
+          )}
+          <span style={{ fontSize: '11px', color: 'var(--text-muted, var(--text-secondary))', opacity: 0.7 }}>
+            {messages.length} msg{messages.length !== 1 ? 's' : ''}
+          </span>
+          <button
+            onClick={handleCompact}
+            disabled={compacting || loading}
+            title="Compact context — summarise older messages to free up context space"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '2px 8px',
+              fontSize: '11px',
+              color: 'var(--text-secondary)',
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: '4px',
+              cursor: compacting || loading ? 'not-allowed' : 'pointer',
+              opacity: compacting || loading ? 0.5 : 1,
+              transition: 'opacity 150ms',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 14 10 14 10 20" />
+              <polyline points="20 10 14 10 14 4" />
+              <line x1="10" y1="14" x2="3" y2="21" />
+              <line x1="21" y1="3" x2="14" y2="10" />
+            </svg>
+            {compacting ? 'Compacting...' : 'Compact'}
+          </button>
+        </div>
+      )}
+
       {/* Messages / CLI transcript */}
       {viewMode === 'cli' && sessionId ? (
         <CliTranscript sessionId={sessionId} />

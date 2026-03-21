@@ -190,6 +190,11 @@ export const api = {
     post<{ status: string }>(`/api/sessions/${sessionId}/queue/resume`, {}),
   getSessionTranscript: (id: string) =>
     get<TranscriptEntry[]>(`/api/sessions/${id}/transcript`),
+  compactSession: (sessionId: string) =>
+    post<{ success: boolean; originalCount: number; compactedCount: number; summary: string }>(
+      `/api/sessions/${sessionId}/compact`,
+      {},
+    ),
   uploadFile: async (file: File): Promise<UploadedFile> => {
     const form = new FormData()
     form.append('file', file)

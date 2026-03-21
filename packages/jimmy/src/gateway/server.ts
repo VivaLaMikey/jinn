@@ -30,6 +30,8 @@ import {
   freezeSessions,
 } from "./restart-tracker.js";
 import { spawnRestartWatcher } from "./restart-watcher-spawner.js";
+import { UsageMonitor } from "../shared/usageAwareness.js";
+import { startUsagePoller, stopUsagePoller } from "../shared/usagePoller.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -141,6 +143,9 @@ export async function startGateway(
   const engines = new Map<string, InstanceType<typeof ClaudeEngine> | InstanceType<typeof CodexEngine>>();
   engines.set("claude", claudeEngine);
   engines.set("codex", codexEngine);
+
+  // Start usage poller (proactive Claude utilisation monitoring)
+  startUsagePoller();
 
   // Derive connector names from config
   const connectorNames: string[] = [];
@@ -299,6 +304,16 @@ export async function startGateway(
     }
   };
 
+  // Usage monitor — polls Anthropic usage API if credentials are configured
+  let usageMonitor: UsageMonitor | undefined;
+  const anthropicCfg = config.anthropic;
+  if (anthropicCfg?.sessionKey && anthropicCfg?.orgId) {
+    usageMonitor = new UsageMonitor(anthropicCfg.sessionKey, anthropicCfg.orgId);
+    usageMonitor.start();
+  } else {
+    logger.info("UsageMonitor: no anthropic credentials in config — usage polling disabled");
+  }
+
   // API context
   const apiContext: ApiContext = {
     config: currentConfig,
@@ -307,6 +322,7 @@ export async function startGateway(
     getConfig: () => currentConfig,
     emit,
     connectors: connectorMap,
+    usageMonitor,
   };
 
   // Replay any pending web queue items (e.g. gateway restart mid-run)
@@ -568,6 +584,10 @@ export async function startGateway(
 
     // Stop cron scheduler
     stopScheduler();
+
+    // Stop usage poller (Swift-script-based) and config-based usage monitor
+    stopUsagePoller();
+    usageMonitor?.stop();
 
     // Stop connectors
     for (const connector of connectors) {

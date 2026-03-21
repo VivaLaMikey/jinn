@@ -460,6 +460,12 @@ export function getMessages(sessionId: string): SessionMessage[] {
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
 }
 
+export function deleteMessages(sessionId: string): number {
+  const db = initDb();
+  const result = db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
+  return result.changes;
+}
+
 export interface QueueItem {
   id: string;
   sessionId: string;

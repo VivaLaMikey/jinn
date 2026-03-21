@@ -18,6 +18,7 @@ import {
   deleteSessions,
   insertMessage,
   getMessages,
+  deleteMessages,
   enqueueQueueItem,
   cancelQueueItem,
   getQueueItems,
@@ -25,6 +26,7 @@ import {
   listAllPendingQueueItems,
   getFile,
 } from "../sessions/registry.js";
+import { compactMessages } from "../sessions/compact.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -41,7 +43,8 @@ import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { isCircuitOpen, getCircuitState } from "../shared/circuitBreaker.js";
-import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
+import { getClaudeExpectedResetAt, recordClaudeRateLimit, isPacingExceeded, isLikelyNearClaudeUsageLimit, type UsageMonitor } from "../shared/usageAwareness.js";
+import { getCachedUsage } from "../shared/usagePoller.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
@@ -68,6 +71,7 @@ export interface ApiContext {
   getConfig: () => JinnConfig;
   emit: (event: string, payload: unknown) => void;
   connectors: Map<string, import("../shared/types.js").Connector>;
+  usageMonitor?: UsageMonitor;
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
@@ -348,6 +352,40 @@ export async function handleApiRequest(
       });
     }
 
+    // GET /api/usage — return Anthropic usage data and pacing recommendation
+    if (method === "GET" && pathname === "/api/usage") {
+      const pollerData = getCachedUsage();
+
+      if (pollerData) {
+        return json(res, {
+          utilization: pollerData.utilization,
+          resetsAt: pollerData.resetsAt,
+          fetchedAt: pollerData.fetchedAt,
+          pacingExceeded: isPacingExceeded(),
+          nearLimit: isLikelyNearClaudeUsageLimit(),
+          error: pollerData.error ?? null,
+        });
+      }
+
+      // Fallback: use old usageMonitor if poller has no data yet
+      const monitor = context.usageMonitor;
+      const usage = monitor ? monitor.getUsage() : null;
+
+      if (usage) {
+        const throttle = monitor!.shouldThrottle();
+        return json(res, {
+          utilization: usage.fiveHour?.utilization ?? null,
+          resetsAt: usage.fiveHour?.resetsAt ?? null,
+          fetchedAt: usage.fetchedAt ?? null,
+          pacingExceeded: throttle.shouldThrottle,
+          nearLimit: isLikelyNearClaudeUsageLimit(),
+          error: null,
+        });
+      }
+
+      return json(res, { status: "unavailable", reason: "Usage poller not active" });
+    }
+
     // GET /api/instances
     if (method === "GET" && pathname === "/api/instances") {
       const instances = loadInstances();
@@ -461,6 +499,57 @@ export async function handleApiRequest(
       logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineOverride, engineSessionId, lastError)`);
       context.emit("session:updated", { sessionId: params.id });
       return json(res, { status: "reset", sessionId: params.id });
+    }
+
+    // POST /api/sessions/:id/compact
+    params = matchRoute("/api/sessions/:id/compact", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+
+      const allMessages = getMessages(params.id);
+      const result = compactMessages(allMessages, 5);
+
+      if (result.originalCount <= 5) {
+        // Nothing to compact — return early without modifying the database
+        return json(res, {
+          success: true,
+          originalCount: result.originalCount,
+          compactedCount: result.originalCount,
+          summary: '',
+        });
+      }
+
+      // Replace messages: delete all, insert summary + kept messages
+      deleteMessages(params.id);
+
+      const summaryTimestamp = result.keptMessages.length > 0
+        ? result.keptMessages[0].timestamp - 1
+        : Date.now() - 1;
+
+      // Insert as a "system" role message so it renders distinctly
+      const db = initDb();
+      db.prepare('INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)').run(
+        crypto.randomUUID(),
+        params.id,
+        'system',
+        result.summary,
+        summaryTimestamp,
+      );
+
+      for (const msg of result.keptMessages) {
+        insertMessage(params.id, msg.role, msg.content);
+      }
+
+      logger.info(`Session ${params.id} compacted: ${result.originalCount} -> ${result.compactedCount} messages`);
+      context.emit("session:updated", { sessionId: params.id });
+
+      return json(res, {
+        success: true,
+        originalCount: result.originalCount,
+        compactedCount: result.compactedCount,
+        summary: result.summary,
+      });
     }
 
     // DELETE /api/sessions/:id/queue/:itemId — cancel specific item
@@ -1117,6 +1206,7 @@ export async function handleApiRequest(
         "stt",
         "skills",
         "remotes",
+        "anthropic",
       ];
       const unknownKeys = Object.keys(body).filter((k) => !KNOWN_KEYS.includes(k));
       if (unknownKeys.length > 0) {

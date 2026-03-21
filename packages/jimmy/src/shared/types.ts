@@ -345,4 +345,8 @@ export interface JinnConfig {
     languages?: string[];
   };
   remotes?: Record<string, { url: string; label?: string }>;
+  anthropic?: {
+    sessionKey?: string;
+    orgId?: string;
+  };
 }
