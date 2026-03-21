@@ -83,6 +83,13 @@ async function put<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+interface UploadedFile {
+  id: string
+  filename: string
+  size: number
+  mimetype: string | null
+}
+
 export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
   getSessions: () => get<Record<string, unknown>[]>("/api/sessions"),
@@ -99,6 +106,8 @@ export const api = {
     post<Record<string, unknown>>(`/api/sessions/${id}/message`, data),
   stopSession: (id: string) =>
     post<{ status: string; sessionId: string }>(`/api/sessions/${id}/stop`, {}),
+  resetSession: (id: string) =>
+    post<{ status: string; sessionId: string }>(`/api/sessions/${id}/reset`, {}),
   getCronJobs: () => get<Record<string, unknown>[]>("/api/cron"),
   getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
   updateCronJob: (id: string, data: Record<string, unknown>) =>
@@ -117,7 +126,7 @@ export const api = {
   getLogs: (n?: number) =>
     get<{ lines: string[] }>(`/api/logs${n ? `?n=${n}` : ""}`),
   getOnboarding: () =>
-    get<{ needed: boolean; sessionsCount: number; hasEmployees: boolean; portalName: string | null; operatorName: string | null }>("/api/onboarding"),
+    get<{ needed: boolean; onboarded: boolean; sessionsCount: number; hasEmployees: boolean; portalName: string | null; operatorName: string | null }>("/api/onboarding"),
   completeOnboarding: (data: { portalName?: string; operatorName?: string; language?: string }) =>
     post<{ status: string; portal: { portalName?: string; operatorName?: string; language?: string } }>("/api/onboarding", data),
   getMeetings: (status?: string) =>
@@ -181,4 +190,11 @@ export const api = {
     post<{ status: string }>(`/api/sessions/${sessionId}/queue/resume`, {}),
   getSessionTranscript: (id: string) =>
     get<TranscriptEntry[]>(`/api/sessions/${id}/transcript`),
+  uploadFile: async (file: File): Promise<UploadedFile> => {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${BASE}/api/files`, { method: 'POST', body: form })
+    if (!res.ok) throw new Error(await extractErrorMessage(res))
+    return res.json()
+  },
 };

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { EngineRateLimitInfo, InterruptibleEngine, EngineRunOpts, EngineResult, StreamDelta } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 import { isCircuitOpen, recordFailure, recordSuccess } from "../shared/circuitBreaker.js";
+import { isDeadSessionError } from "../shared/rateLimit.js";
 
 interface LiveProcess {
   proc: ChildProcess;
@@ -133,6 +134,15 @@ export class ClaudeEngine implements InterruptibleEngine {
         logger.warn(
           `[error-class:rate-limit] Claude rate limit detected for session ${opts.sessionId || "unknown"}: ${result.error.slice(0, 200)}`,
         );
+        return result;
+      }
+
+      // Dead session (expired/invalid --resume ID) — clear the stale ID so the
+      // next attempt (if any) starts fresh instead of retrying the same dead session.
+      if (isDeadSessionError(result)) {
+        logger.warn(`Dead session detected for ${opts.sessionId || "unknown"}: ${result.error.slice(0, 200)}`);
+        opts = { ...opts, resumeSessionId: undefined };
+        // Don't retry — let the caller (manager) handle cleanup
         return result;
       }
 

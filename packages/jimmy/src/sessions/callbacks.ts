@@ -4,7 +4,7 @@ import { logger } from "../shared/logger.js";
 import type { Session } from "../shared/types.js";
 
 /**
- * Notify the parent session that a child session has completed.
+ * Notify the parent session that a child session has replied.
  * Sends an internal message to the parent via the local HTTP API.
  * Fire-and-forget — errors are logged but never rethrown.
  */
@@ -68,9 +68,9 @@ async function _sendNotification(
   if (result.error) {
     message = `⚠️ Employee "${employeeName}" (session ${childId}) encountered an error: ${result.error}`;
   } else {
-    const raw = result.result || "Task completed (no output)";
-    const preview = raw.length > 500 ? raw.substring(0, 500) + "..." : raw;
-    message = `✅ Employee "${employeeName}" (session ${childId}) has completed their task.\n\nResult preview:\n${preview}`;
+    const raw = result.result || "(no output)";
+    const preview = raw.length > 200 ? raw.substring(0, 200) + "..." : raw;
+    message = `📩 Employee "${employeeName}" replied in session ${childId}.\nRead the latest messages: GET /api/sessions/${childId}?last=N\n\nPreview: ${preview}`;
   }
 
   await _sendRaw(childSession.parentSessionId!, message);

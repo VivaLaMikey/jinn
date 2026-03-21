@@ -62,6 +62,7 @@ export function startDaemon(config: JinnConfig): void {
     logger.info(`Gateway daemon started with PID ${child.pid}`);
   }
 
+  child.disconnect();
   child.unref();
 }
 

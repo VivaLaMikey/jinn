@@ -23,12 +23,13 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
+import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError } from "../shared/rateLimit.js";
 import { isCircuitOpen, getCircuitState } from "../shared/circuitBreaker.js";
 import { isSessionFrozen } from "../gateway/restart-tracker.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
+import { checkBudget } from "../gateway/budgets.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
 
 export interface RouteOptions {
@@ -295,6 +296,31 @@ export class SessionManager {
           `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
       }
 
+      // Budget enforcement — check BEFORE engine.run()
+      if (session.employee) {
+        const budgetConfig = (this.config as any).budgets?.employees as Record<string, number> | undefined;
+        if (budgetConfig && session.employee in budgetConfig) {
+          const budgetStatus = checkBudget(session.employee, budgetConfig);
+          if (budgetStatus === 'paused') {
+            logger.warn(`Session ${session.id} blocked: employee "${session.employee}" has exceeded their budget`);
+            const pausedMsg = `Budget limit exceeded for employee "${session.employee}". Session blocked.`;
+            updateSession(session.id, {
+              status: 'error',
+              lastActivity: new Date().toISOString(),
+              lastError: pausedMsg,
+            });
+            if (decorateMessages && connector.setTypingStatus) {
+              await connector.setTypingStatus(target.channel, threadTs, '').catch(() => {});
+            }
+            await connector.replyMessage(target, `⛔ ${pausedMsg}`).catch(() => {});
+            if (decorateMessages && capabilities.reactions) {
+              await connector.removeReaction(target, 'eyes').catch(() => {});
+            }
+            return;
+          }
+        }
+      }
+
       // Heuristic preflight warning: Claude usage limits don't expose a precise "remaining" budget.
       // If we've hit the limit recently and this looks like a heavy turn, warn before we spend time.
       if (decorateMessages && session.engine === "claude" && isLikelyNearClaudeUsageLimit()) {
@@ -330,8 +356,27 @@ export class SessionManager {
 
       const wasInterrupted = result.error?.startsWith("Interrupted");
 
-      // Detect rate limit / usage limit errors and auto-retry
-      const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
+      // Dead session detection: if the engine session ID is stale (expired/invalid),
+      // clear cached engine sessions from transportMeta so the next attempt starts fresh.
+      // Also sets a flag so we skip the rate-limit retry loop below (a dead session
+      // error can contain text like "429" that would otherwise match RATE_LIMIT_ERROR_RE).
+      const isDead = !wasInterrupted && isDeadSessionError(result);
+      if (isDead) {
+        logger.warn(`Dead session detected for ${session.id} — clearing stale engine IDs`);
+        const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
+        delete meta["engineSessions"];
+        delete meta["engineOverride"];
+        updateSession(session.id, {
+          engineSessionId: null,
+          transportMeta: meta as any,
+        });
+        // Update local reference so subsequent code doesn't re-read stale IDs
+        session = { ...session, engineSessionId: null, transportMeta: meta as any };
+      }
+
+      // Detect rate limit / usage limit errors and auto-retry.
+      // Skip entirely for dead sessions — they are not rate limits.
+      const rateLimit = (!wasInterrupted && !isDead) ? detectRateLimit(result) : { limited: false as const };
       if (rateLimit.limited) {
         recordClaudeRateLimit(rateLimit.resetsAt);
 

@@ -9,6 +9,7 @@ import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
+  initDb,
   listSessions,
   getSession,
   createSession,
@@ -22,6 +23,7 @@ import {
   getQueueItems,
   cancelAllPendingQueueItems,
   listAllPendingQueueItems,
+  getFile,
 } from "../sessions/registry.js";
 import {
   CONFIG_PATH,
@@ -31,6 +33,7 @@ import {
   SKILLS_DIR,
   LOGS_DIR,
   TMP_DIR,
+  FILES_DIR,
 } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
@@ -150,12 +153,12 @@ function dispatchWebSessionRun(
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
-  opts?: { delayMs?: number; queueItemId?: string },
+  opts?: { delayMs?: number; queueItemId?: string; attachments?: string[] },
 ): void {
   const run = async () => {
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
-      await runWebSession(session, prompt, engine, config, context);
+      await runWebSession(session, prompt, engine, config, context, opts?.attachments);
     }, opts?.queueItemId);
   };
 
@@ -209,6 +212,29 @@ async function readJsonBody(req: HttpRequest, res: ServerResponse): Promise<{ ok
     badRequest(res, "Invalid JSON in request body");
     return { ok: false };
   }
+}
+
+/** Resolve an array of file IDs to local filesystem paths for engine consumption. */
+function resolveAttachmentPaths(fileIds: unknown): string[] {
+  if (!Array.isArray(fileIds)) return [];
+  const paths: string[] = [];
+  for (const id of fileIds) {
+    if (typeof id !== "string" || !id.trim()) continue;
+    const meta = getFile(id);
+    if (!meta) {
+      logger.warn(`Attachment file not found: ${id}`);
+      continue;
+    }
+    const filePath = path.join(FILES_DIR, meta.id, meta.filename);
+    if (fs.existsSync(filePath)) {
+      paths.push(filePath);
+    } else if (meta.path && fs.existsSync(meta.path)) {
+      paths.push(meta.path);
+    } else {
+      logger.warn(`Attachment file missing on disk: ${id} (${meta.filename})`);
+    }
+  }
+  return paths;
 }
 
 function json(res: ServerResponse, data: unknown, status = 200): void {
@@ -368,6 +394,12 @@ export async function handleApiRequest(
         }
       }
 
+      // Support ?last=N to return only the N most recent messages
+      const lastN = parseInt(url.searchParams.get("last") || "0", 10);
+      if (lastN > 0 && messages.length > lastN) {
+        messages = messages.slice(-lastN);
+      }
+
       return json(res, { ...serializeSession(session, context), messages });
     }
 
@@ -404,6 +436,31 @@ export async function handleApiRequest(
       updateSession(params.id, { status: "idle", lastActivity: new Date().toISOString(), lastError: null });
       context.emit("session:stopped", { sessionId: params.id });
       return json(res, { status: "stopped", sessionId: params.id });
+    }
+
+    // POST /api/sessions/:id/reset — clear stuck session state (stale engine IDs, errors)
+    params = matchRoute("/api/sessions/:id/reset", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const engine = context.sessionManager.getEngine(session.engine);
+      if (engine && isInterruptibleEngine(engine) && engine.isAlive(params.id)) {
+        engine.kill(params.id, "Interrupted by reset");
+      }
+      context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
+      const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
+      delete meta["engineSessions"];
+      delete meta["engineOverride"];
+      updateSession(params.id, {
+        status: "idle",
+        engineSessionId: null,
+        lastActivity: new Date().toISOString(),
+        lastError: null,
+        transportMeta: meta as any,
+      });
+      logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineOverride, engineSessionId, lastError)`);
+      context.emit("session:updated", { sessionId: params.id });
+      return json(res, { status: "reset", sessionId: params.id });
     }
 
     // DELETE /api/sessions/:id/queue/:itemId — cancel specific item
@@ -597,11 +654,13 @@ export async function handleApiRequest(
       });
       session.status = "running";
 
+      const attachmentPaths = resolveAttachmentPaths(body.attachments);
+
       const queueSessionKey = session.sessionKey || session.sourceRef || session.id;
       const queueItemId = enqueueQueueItem(session.id, queueSessionKey, prompt);
       context.emit("queue:updated", { sessionId: session.id, sessionKey: queueSessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId });
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
       return json(res, serializeSession(session, context), 201);
     }
@@ -676,11 +735,13 @@ export async function handleApiRequest(
       // Clear any pending cancellation so the new message runs normally.
       context.sessionManager.getQueue().clearCancelled(session.sessionKey || session.sourceRef || session.id);
 
+      const attachmentPaths = resolveAttachmentPaths(body.attachments);
+
       const sessionKey = session.sessionKey || session.sourceRef || session.id;
       const queueItemId = enqueueQueueItem(session.id, sessionKey, prompt);
       context.emit("queue:updated", { sessionId: session.id, sessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId });
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
       return json(res, { status: "queued", sessionId: session.id });
     }
@@ -1281,8 +1342,10 @@ export async function handleApiRequest(
           (f) => String(f).endsWith(".yaml") && !String(f).endsWith("department.yaml")
         );
       const config = context.getConfig();
+      const onboarded = config.portal?.onboarded === true;
       return json(res, {
-        needed: sessions.length === 0 && !hasEmployees,
+        needed: !onboarded && sessions.length === 0 && !hasEmployees,
+        onboarded,
         sessionsCount: sessions.length,
         hasEmployees,
         portalName: config.portal?.portalName ?? null,
@@ -1304,6 +1367,7 @@ export async function handleApiRequest(
         ...config,
         portal: {
           ...config.portal,
+          onboarded: true,
           ...(portalName !== undefined && { portalName: portalName || undefined }),
           ...(operatorName !== undefined && { operatorName: operatorName || undefined }),
           ...(language !== undefined && { language: language || undefined }),
@@ -1619,6 +1683,123 @@ export async function handleApiRequest(
       return json(res, getRestartTrackerState());
     }
 
+    // ── Goals ────────────────────────────────────────────────────────
+    // GET /api/goals
+    if (method === "GET" && pathname === "/api/goals") {
+      const { listGoals } = await import("./goals.js");
+      const db = initDb();
+      return json(res, listGoals(db));
+    }
+
+    // GET /api/goals/tree
+    if (method === "GET" && pathname === "/api/goals/tree") {
+      const { getGoalTree } = await import("./goals.js");
+      const db = initDb();
+      return json(res, getGoalTree(db));
+    }
+
+    // POST /api/goals
+    if (method === "POST" && pathname === "/api/goals") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const { createGoal } = await import("./goals.js");
+      const db = initDb();
+      const goal = createGoal(db, _parsed.body as Record<string, unknown>);
+      return json(res, goal, 201);
+    }
+
+    // GET /api/goals/:id
+    params = matchRoute("/api/goals/:id", pathname);
+    if (method === "GET" && params) {
+      const { getGoal } = await import("./goals.js");
+      const db = initDb();
+      const goal = getGoal(db, params.id);
+      if (!goal) return notFound(res);
+      return json(res, goal);
+    }
+
+    // PUT /api/goals/:id
+    params = matchRoute("/api/goals/:id", pathname);
+    if (method === "PUT" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const { updateGoal } = await import("./goals.js");
+      const db = initDb();
+      const goal = updateGoal(db, params.id, _parsed.body as Record<string, unknown>);
+      if (!goal) return notFound(res);
+      return json(res, goal);
+    }
+
+    // DELETE /api/goals/:id
+    params = matchRoute("/api/goals/:id", pathname);
+    if (method === "DELETE" && params) {
+      const { deleteGoal } = await import("./goals.js");
+      const db = initDb();
+      deleteGoal(db, params.id);
+      return json(res, { status: "ok" });
+    }
+
+    // ── Costs ────────────────────────────────────────────────────────
+    // GET /api/costs/summary
+    if (method === "GET" && pathname === "/api/costs/summary") {
+      const { getCostSummary } = await import("./costs.js");
+      const rawPeriod = url.searchParams.get("period") ?? "month";
+      const period = (rawPeriod === "day" || rawPeriod === "week" || rawPeriod === "month") ? rawPeriod : "month";
+      return json(res, getCostSummary(period));
+    }
+
+    // GET /api/costs/by-employee
+    if (method === "GET" && pathname === "/api/costs/by-employee") {
+      const { getCostsByEmployee } = await import("./costs.js");
+      const rawPeriod = url.searchParams.get("period") ?? "month";
+      const period = (rawPeriod === "week") ? "week" : "month";
+      return json(res, getCostsByEmployee(period));
+    }
+
+    // ── Budgets ──────────────────────────────────────────────────────
+    // GET /api/budgets
+    if (method === "GET" && pathname === "/api/budgets") {
+      const { getBudgetStatus } = await import("./budgets.js");
+      const config = context.getConfig();
+      const budgetConfig = (config as any).budgets?.employees as Record<string, number> | undefined ?? {};
+      const employees = Object.keys(budgetConfig);
+      const statuses = employees.map((emp) => ({
+        employee: emp,
+        ...getBudgetStatus(emp, budgetConfig),
+      }));
+      return json(res, { employees: budgetConfig, statuses });
+    }
+
+    // PUT /api/budgets
+    if (method === "PUT" && pathname === "/api/budgets") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as Record<string, unknown>;
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
+      } catch { /* start fresh if unreadable */ }
+      const merged = deepMerge(existing, { budgets: { employees: body } });
+      fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
+      logger.info("Budget limits updated via API");
+      return json(res, { status: "ok" });
+    }
+
+    // POST /api/budgets/:employee/override
+    params = matchRoute("/api/budgets/:employee/override", pathname);
+    if (method === "POST" && params) {
+      const { overrideBudget } = await import("./budgets.js");
+      const config = context.getConfig();
+      const budgetConfig = (config as any).budgets?.employees as Record<string, number> | undefined ?? {};
+      return json(res, overrideBudget(params.employee, budgetConfig));
+    }
+
+    // GET /api/budgets/events
+    if (method === "GET" && pathname === "/api/budgets/events") {
+      const { getBudgetEvents } = await import("./budgets.js");
+      return json(res, getBudgetEvents());
+    }
+
     return notFound(res);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1816,6 +1997,7 @@ async function runWebSession(
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
+  attachments?: string[],
 ): Promise<void> {
   const currentSession = getSession(session.id);
   if (!currentSession) {
@@ -1888,6 +2070,7 @@ async function runWebSession(
       model: currentSession.model ?? engineConfig.model,
       effortLevel,
       cliFlags: employee?.cliFlags,
+      attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
       onStream: (delta) => {
         const now = Date.now();
