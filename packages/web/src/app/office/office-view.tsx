@@ -102,7 +102,7 @@ export default function OfficeView() {
   const [showNoticeBoard, setShowNoticeBoard] = useState(false)
 
   // ─── COO click-to-move state ─────────────────────────────────────────────
-  const [cooPosition, setCooPosition] = useState<{ x: number; y: number } | null>(null)
+  const [cooPosition, setCooPosition] = useState<{ x: number; y: number } | null>({ x: 400, y: 500 })
   const [cooDestination, setCooDestination] = useState<{ x: number; y: number } | null>(null)
   const [cooPath, setCooPath] = useState<{ x: number; y: number }[]>([])
   const [cooWalking, setCooWalking] = useState(false)

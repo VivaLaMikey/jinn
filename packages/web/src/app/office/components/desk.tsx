@@ -25,8 +25,8 @@ interface DeskProps {
 //   - left face: rectangle on left (darkest — the "west" face)
 // ---------------------------------------------------------------------------
 
-const ISO_DESK_W  = 72   // overall container width
-const ISO_DESK_H  = 56   // overall container height
+const ISO_DESK_W  = 96   // overall container width
+const ISO_DESK_H  = 64   // overall container height
 
 // Monitor component — isometric (shows front + left edge)
 function IsometricMonitor({
@@ -314,7 +314,7 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
             display: 'flex',
             alignItems: 'flex-end',
             justifyContent: 'center',
-            height: '72px',
+            height: '112px',
             width: `${ISO_DESK_W}px`,
             position: 'relative',
           }}
@@ -323,7 +323,7 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
             name={employee.name}
             department={employee.department}
             status={employee.status}
-            scale={3}
+            scale={4}
             appearance={employee.appearance}
           />
         </div>

@@ -434,8 +434,9 @@ export const Room = memo(function Room({
       style={{
         gridColumn,
         position: 'relative',
-        width: `${ISO_GRID_W + 32}px`,
-        height: `${ROOM_CONTAINER_H}px`,
+        width: '100%',
+        height: '100%',
+        minHeight: `${ROOM_CONTAINER_H}px`,
         flexShrink: 0,
         cursor: decorationMode ? 'crosshair' : 'default',
         outline: decorationMode ? `2px dashed ${deptColor}60` : 'none',
@@ -444,19 +445,46 @@ export const Room = memo(function Room({
         filter: `drop-shadow(0 8px 24px rgba(100,60,20,0.3))`,
       }}
     >
-      {/* ---- BACK WALL (top-left face, angled) ---- */}
-      {/* The back wall runs from the top-left corner to the top-right corner of the floor grid */}
-      {/* In isometric: it's the face seen behind the floor, going up */}
+      {/* Room label — above the room, never clipped */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '2px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 20,
+          background: `${deptColor}20`,
+          border: `1px solid ${deptColor}60`,
+          borderRadius: '4px',
+          padding: '2px 10px',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <span
+          style={{
+            fontFamily: 'monospace',
+            fontSize: '9px',
+            fontWeight: 700,
+            color: deptColor,
+            textTransform: 'uppercase',
+            letterSpacing: '0.1em',
+          }}
+        >
+          {room.name}
+        </span>
+      </div>
+
+      {/* ---- BACK WALL (top face, runs along the top of the floor grid) ---- */}
       <div
         style={{
           position: 'absolute',
           top: `${ROOM_PAD_TOP}px`,
           left: `${gridOriginX}px`,
-          width: `${(ROOM_COLS) * (TILE_WIDTH / 2)}px`,
-          height: `${WALL_HEIGHT + (ROOM_COLS - 1) * (TILE_HEIGHT / 2)}px`,
+          width: `${(ROOM_COLS) * (TILE_WIDTH / 2) + (ROOM_COLS) * (TILE_HEIGHT / 2)}px`,
+          height: `${WALL_HEIGHT}px`,
           background: `linear-gradient(160deg, ${WALL_COLORS.accent} 0%, ${WALL_COLORS.base} 100%)`,
           borderTop: `3px solid ${deptColor}`,
-          clipPath: `polygon(0% 100%, ${ROOM_COLS * (TILE_WIDTH / 2)}px 0%, ${ROOM_COLS * (TILE_WIDTH / 2) + ROOM_COLS * (TILE_HEIGHT / 2)}px ${ROOM_COLS * (TILE_HEIGHT / 2)}px, ${ROOM_COLS * (TILE_HEIGHT / 2)}px 100%)`,
+          borderRadius: '2px 2px 0 0',
           zIndex: 0,
           overflow: 'hidden',
         }}
@@ -476,33 +504,6 @@ export const Room = memo(function Room({
             }}
           />
         ))}
-        {/* Department name plaque on the wall */}
-        <div
-          style={{
-            position: 'absolute',
-            bottom: '14px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: `${deptColor}20`,
-            border: `1px solid ${deptColor}60`,
-            borderRadius: '2px',
-            padding: '2px 8px',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <span
-            style={{
-              fontFamily: 'monospace',
-              fontSize: '9px',
-              fontWeight: 700,
-              color: deptColor,
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-            }}
-          >
-            {room.name}
-          </span>
-        </div>
         {/* Wall art */}
         <div
           style={{
@@ -516,16 +517,16 @@ export const Room = memo(function Room({
       </div>
 
       {/* ---- LEFT WALL (angled, dark side) ---- */}
-      {/* Runs from top-left corner of floor downward-left */}
       <div
         style={{
           position: 'absolute',
-          top: `${ROOM_PAD_TOP + WALL_HEIGHT - (ROOM_ROWS) * (TILE_HEIGHT / 2)}px`,
+          top: `${ROOM_PAD_TOP}px`,
           left: `${gridOriginX - (ROOM_ROWS) * (TILE_WIDTH / 2)}px`,
-          width: `${(ROOM_ROWS) * (TILE_WIDTH / 2) + 4}px`,
-          height: `${WALL_HEIGHT + (ROOM_ROWS) * (TILE_HEIGHT / 2)}px`,
+          width: `${(ROOM_ROWS) * (TILE_WIDTH / 2)}px`,
+          height: `${WALL_HEIGHT}px`,
           background: `linear-gradient(200deg, ${WALL_COLORS.base} 0%, ${WALL_COLORS.trim} 100%)`,
-          clipPath: `polygon(100% 0%, 100% 100%, 0% ${(ROOM_ROWS) * (TILE_HEIGHT / 2) + WALL_HEIGHT}px, 0% ${WALL_HEIGHT}px)`,
+          transform: 'skewY(30deg)',
+          transformOrigin: 'top right',
           filter: 'brightness(0.88)',
           zIndex: 0,
         }}
@@ -542,7 +543,6 @@ export const Room = memo(function Room({
               bottom: 0,
               width: '1px',
               background: `${WALL_COLORS.trim}60`,
-              transform: 'skewY(60deg)',
             }}
           />
         ))}

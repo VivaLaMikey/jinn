@@ -32,7 +32,7 @@ interface EmployeeSpriteProps {
   name: string
   department: string
   status: EmployeeStatus
-  scale?: 2 | 3 | 4
+  scale?: 2 | 3 | 4 | 5
   /** When provided, overrides the deterministic palette with appearance data */
   appearance?: EmployeeAppearance
   /** Walk direction — only relevant when status would normally show idle/work */
