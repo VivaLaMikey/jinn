@@ -94,9 +94,9 @@ export const TitleBar = memo(function TitleBar({ connected }: TitleBarProps) {
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '0 12px',
-          height: '34px',
+          height: '40px',
           borderBottom: '2px solid #C8943A',
-          background: 'linear-gradient(180deg, #4A3020 0%, #3A2418 100%)',
+          background: 'linear-gradient(180deg, #1A2430 0%, #121820 100%)',
           flexShrink: 0,
         }}
       >
@@ -106,7 +106,7 @@ export const TitleBar = memo(function TitleBar({ connected }: TitleBarProps) {
           <span
             style={{
               fontFamily: 'monospace',
-              fontSize: '11px',
+              fontSize: '13px',
               fontWeight: 700,
               color: '#E8A020',
               letterSpacing: '0.18em',

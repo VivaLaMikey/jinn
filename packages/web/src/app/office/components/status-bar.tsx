@@ -48,10 +48,10 @@ function HabboButton({
       style={{
         fontFamily: 'monospace',
         fontSize: '9px',
-        padding: '3px 9px',
+        padding: '4px 12px',
         background: active
-          ? `color-mix(in srgb, ${color} 30%, #3A2418)`
-          : `color-mix(in srgb, ${color} 15%, #3A2418)`,
+          ? `color-mix(in srgb, ${color} 30%, #121820)`
+          : `color-mix(in srgb, ${color} 15%, #121820)`,
         border: 'none',
         color: color,
         cursor: onClick ? 'pointer' : 'default',
@@ -67,13 +67,13 @@ function HabboButton({
       }}
       onMouseEnter={(e) => {
         const el = e.currentTarget as HTMLButtonElement
-        el.style.background = `color-mix(in srgb, ${color} 28%, #3A2418)`
+        el.style.background = `color-mix(in srgb, ${color} 28%, #121820)`
       }}
       onMouseLeave={(e) => {
         const el = e.currentTarget as HTMLButtonElement
         el.style.background = active
-          ? `color-mix(in srgb, ${color} 30%, #3A2418)`
-          : `color-mix(in srgb, ${color} 15%, #3A2418)`
+          ? `color-mix(in srgb, ${color} 30%, #121820)`
+          : `color-mix(in srgb, ${color} 15%, #121820)`
       }}
       onMouseDown={(e) => {
         const el = e.currentTarget as HTMLButtonElement
@@ -111,9 +111,9 @@ export const StatusBar = memo(function StatusBar({
         alignItems: 'center',
         justifyContent: 'space-between',
         padding: '0 12px',
-        height: '32px',
+        height: '36px',
         borderTop: '2px solid #C8943A',
-        background: 'linear-gradient(180deg, #3A2418 0%, #2A1810 100%)',
+        background: 'linear-gradient(180deg, #121820 0%, #0E1520 100%)',
         flexShrink: 0,
         gap: '8px',
         overflow: 'hidden',
@@ -169,9 +169,9 @@ export const StatusBar = memo(function StatusBar({
               style={{
                 fontFamily: 'monospace',
                 fontSize: '8px',
-                padding: '1px 5px',
+                padding: '3px 7px',
                 background: `${color}20`,
-                border: `1px solid ${color}50`,
+                border: `1px solid ${color}60`,
                 color: `${color}cc`,
                 cursor: onDepartmentFilter ? 'pointer' : 'default',
                 letterSpacing: '0.04em',

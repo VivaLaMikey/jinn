@@ -39,16 +39,16 @@ interface RoomProps {
 // ---------------------------------------------------------------------------
 // Room grid configuration
 // ---------------------------------------------------------------------------
-const ROOM_COLS = 8   // tiles across (Habbo rooms are spacious)
-const ROOM_ROWS = 6   // tiles deep
+const ROOM_COLS = 10   // tiles across
+const ROOM_ROWS = 10   // tiles deep
 
 // Compute the total pixel width and height needed to contain the isometric grid
 // Width  = (cols + rows) * TILE_WIDTH / 2
 // Height = (cols + rows) * TILE_HEIGHT / 2  + wall height overhead
 const ISO_GRID_W  = (ROOM_COLS + ROOM_ROWS) * (TILE_WIDTH / 2)
 const ISO_GRID_H  = (ROOM_COLS + ROOM_ROWS) * (TILE_HEIGHT / 2)
-const WALL_HEIGHT = 110  // pixel height of the back/left walls (Habbo walls are tall)
-const ROOM_PAD_TOP = 28  // extra top padding above the walls for the room header
+const WALL_HEIGHT = 160  // pixel height of the back/left walls (Habbo walls are tall ~2.5x tile height)
+const ROOM_PAD_TOP = 36  // extra top padding above the walls for the room header
 
 // Total room container height
 const ROOM_CONTAINER_H = ISO_GRID_H + WALL_HEIGHT + ROOM_PAD_TOP + 48  // +48 for name labels below desks
@@ -405,9 +405,9 @@ export const Room = memo(function Room({
     return result
   }, [])
 
-  // Isometric grid origin offset so the left-most corner starts at a safe X
-  // The grid left corner is at gridToScreen(0, ROOM_ROWS-1) — shift everything right
-  const gridOriginX = (ROOM_ROWS - 1) * (TILE_WIDTH / 2) + 8
+  // Isometric grid origin offset so tile (0,0) top-point sits at the back-wall base.
+  // The grid's left-most screen point is at gridToScreen(0, ROOM_ROWS-1) — shift right to clear the left wall.
+  const gridOriginX = ROOM_ROWS * (TILE_WIDTH / 2) + 8
   const gridOriginY = WALL_HEIGHT + ROOM_PAD_TOP
 
   const handleRoomClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -422,15 +422,15 @@ export const Room = memo(function Room({
   // Desks are placed in a left-to-right, front-to-back sweep
   const deskPositions = useMemo(() => {
     const positions: { gridX: number; gridY: number }[] = []
-    // Spread desks starting from col 1 row 1, with spacing to fill larger rooms
-    let col = 1
-    let row = 1
+    // Start at col=2, row=2 to keep desks away from walls; 3-tile spacing
+    let col = 2
+    let row = 2
     for (let i = 0; i < roomEmployees.length; i++) {
       positions.push({ gridX: col, gridY: row })
-      col += 3  // more spacing between desks (was 2)
+      col += 3  // spacing between desks horizontally
       if (col >= ROOM_COLS - 1) {
-        col = 1
-        row += 2  // more vertical spacing between rows (was 1)
+        col = 2
+        row += 3  // spacing between desk rows
       }
     }
     return positions
@@ -449,62 +449,74 @@ export const Room = memo(function Room({
         cursor: decorationMode ? 'crosshair' : 'default',
         outline: decorationMode ? `2px dashed ${deptColor}60` : 'none',
         outlineOffset: '-4px',
-        // Warm drop shadow — Habbo-style room card feel
-        filter: `drop-shadow(0 6px 16px rgba(60,30,10,0.35))`,
-        background: WALL_COLORS.trim,
-        borderRadius: '4px',
-        overflow: 'hidden',
+        // No card background — room floats in the dark page space
+        background: 'transparent',
       }}
     >
-      {/* Room label — Habbo-style room name plate */}
+      {/* Room name bar — Habbo-style header plate above the walls */}
       <div
         style={{
           position: 'absolute',
-          top: '4px',
+          top: 0,
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 20,
-          background: FURNITURE_COLORS.wood_dark,
+          background: '#2A1810',
           border: `2px solid ${deptColor}`,
-          borderRadius: '3px',
-          padding: '3px 14px',
+          borderRadius: '4px',
+          padding: '4px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
           whiteSpace: 'nowrap',
-          boxShadow: `0 2px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)`,
+          boxShadow: `0 2px 8px rgba(0,0,0,0.4)`,
         }}
       >
+        <span style={{ fontSize: '14px' }}>🚪</span>
         <span
           style={{
             fontFamily: 'monospace',
-            fontSize: '10px',
+            fontSize: '12px',
             fontWeight: 700,
             color: deptColor,
             textTransform: 'uppercase',
-            letterSpacing: '0.15em',
+            letterSpacing: '0.12em',
             textShadow: `0 0 8px ${deptColor}60`,
           }}
         >
           {room.name}
         </span>
+        <span
+          style={{
+            fontFamily: 'monospace',
+            fontSize: '10px',
+            color: '#8C7B6B',
+          }}
+        >
+          {roomEmployees.length}/{employeeNames.length}
+        </span>
       </div>
 
-      {/* ---- BACK WALL (top face, runs along the top of the floor grid) ---- */}
+      {/* ---- BACK WALL — true isometric parallelogram along the NE (top-right) floor edge ---- */}
+      {/* Bottom-left of this div sits at tile (0,0) top-point; skewY follows the iso angle */}
       <div
         style={{
           position: 'absolute',
-          top: `${ROOM_PAD_TOP}px`,
           left: `${gridOriginX}px`,
-          width: `${ROOM_COLS * (TILE_WIDTH / 2) + ROOM_ROWS * (TILE_HEIGHT / 2)}px`,
+          top: `${gridOriginY - WALL_HEIGHT}px`,
+          width: `${ROOM_COLS * (TILE_WIDTH / 2)}px`,
           height: `${WALL_HEIGHT}px`,
-          background: `linear-gradient(160deg, ${WALL_COLORS.accent} 0%, ${WALL_COLORS.base} 100%)`,
-          borderTop: `3px solid ${deptColor}`,
-          borderRadius: '2px 2px 0 0',
+          background: `linear-gradient(180deg, ${WALL_COLORS.accent} 0%, ${WALL_COLORS.base} 100%)`,
+          borderTop: `4px solid ${deptColor}`,
+          transform: 'skewY(26.565deg)',
+          transformOrigin: 'bottom left',
           zIndex: 0,
           overflow: 'hidden',
         }}
         aria-hidden
       >
         {/* Horizontal wallpaper lines — Habbo-style panelling */}
-        {[18, 36, 54, 72, 90].map(h => (
+        {[30, 60, 90, 120, 150].map(h => (
           <div
             key={h}
             style={{
@@ -533,7 +545,7 @@ export const Room = memo(function Room({
         <div
           style={{
             position: 'absolute',
-            top: '8px',
+            top: '16px',
             right: '24px',
           }}
         >
@@ -541,19 +553,22 @@ export const Room = memo(function Room({
         </div>
       </div>
 
-      {/* ---- LEFT WALL (angled, dark side) ---- */}
+      {/* ---- LEFT WALL — true isometric parallelogram along the NW (top-left) floor edge ---- */}
+      {/* Bottom-right of this div sits at tile (0,0) top-point; skewY mirrors the iso angle */}
       <div
         style={{
           position: 'absolute',
-          top: `${ROOM_PAD_TOP}px`,
-          left: `${gridOriginX - (ROOM_ROWS) * (TILE_WIDTH / 2)}px`,
-          width: `${(ROOM_ROWS) * (TILE_WIDTH / 2)}px`,
+          left: `${gridOriginX - ROOM_ROWS * (TILE_WIDTH / 2)}px`,
+          top: `${gridOriginY - WALL_HEIGHT}px`,
+          width: `${ROOM_ROWS * (TILE_WIDTH / 2)}px`,
           height: `${WALL_HEIGHT}px`,
-          background: `linear-gradient(200deg, ${WALL_COLORS.base} 0%, ${WALL_COLORS.trim} 100%)`,
-          transform: 'skewY(30deg)',
-          transformOrigin: 'top right',
-          filter: 'brightness(0.88)',
+          background: `linear-gradient(180deg, ${WALL_COLORS.trim} 0%, #9A8C70 100%)`,
+          borderTop: `4px solid ${deptColor}`,
+          transform: 'skewY(-26.565deg)',
+          transformOrigin: 'bottom right',
+          filter: 'brightness(0.85)',
           zIndex: 0,
+          overflow: 'hidden',
         }}
         aria-hidden
       >
@@ -571,6 +586,18 @@ export const Room = memo(function Room({
             }}
           />
         ))}
+        {/* Baseboard */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: '6px',
+            background: FURNITURE_COLORS.wood_dark,
+            opacity: 0.5,
+          }}
+        />
       </div>
 
       {/* ---- FLOOR TILES ---- */}
@@ -684,31 +711,6 @@ export const Room = memo(function Room({
         aria-hidden
       >
         <IsometricCornerPlant />
-      </div>
-
-      {/* Occupancy badge — top-right overlay */}
-      <div
-        style={{
-          position: 'absolute',
-          top: '4px',
-          right: '8px',
-          background: `${deptColor}20`,
-          border: `1px solid ${deptColor}50`,
-          borderRadius: '8px',
-          padding: '2px 6px',
-          zIndex: 20,
-        }}
-      >
-        <span
-          style={{
-            fontFamily: 'monospace',
-            fontSize: '8px',
-            color: deptColor,
-            fontWeight: 600,
-          }}
-        >
-          {roomEmployees.length}/{employeeNames.length}
-        </span>
       </div>
 
       {/* Placed decorations */}

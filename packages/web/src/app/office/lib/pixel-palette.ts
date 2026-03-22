@@ -98,16 +98,23 @@ export const FURNITURE_COLORS = {
 
 // Floor tile palette — Habbo-style high-contrast checkerboard
 export const FLOOR_COLORS = {
-  tile_light: '#D8C4A0',  // warm cream tile
-  tile_dark:  '#BDA67A',  // warm tan tile (more contrast)
-  carpet:     '#A89060',  // warm sandy carpet
+  tile_light: '#5C8A4F',  // warm carpet green (light)
+  tile_dark:  '#4A7040',  // warm carpet green (dark)
+  carpet:     '#3D5E35',  // deeper carpet border
 }
 
 // Wall palette — warm Habbo-style creams and beiges
 export const WALL_COLORS = {
-  base:   '#E8DCC8',  // warm cream
-  trim:   '#D4C4A8',  // warm beige trim
-  accent: '#F0E8D8',  // lightest warm white
+  base:   '#D4C4A0',  // warm cream wall
+  trim:   '#B8A880',  // darker beige trim (shadow variant)
+  accent: '#E8DCC8',  // lightest warm white highlight
+}
+
+// Page chrome palette — classic Habbo dark teal
+export const PAGE_COLORS = {
+  background:   '#1B3A4B',  // classic Habbo dark teal page bg
+  panel_bg:     '#1E2D3A',  // slightly lighter panel bg
+  panel_border: '#2A4A5A',  // panel border colour
 }
 
 // Monitor palette — dark screen with warm accent glows

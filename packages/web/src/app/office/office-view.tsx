@@ -23,6 +23,8 @@ import { MeetingCreator } from './components/meeting-creator'
 import { StorePanel } from './components/store-panel'
 import { DecorationMode } from './components/decoration-mode'
 import { NoticeBoardPanel } from './components/notice-board-panel'
+import { RoomNavigator } from './components/room-navigator'
+import { getDeptDisplayName } from './lib/office-layout'
 import { api } from '@/lib/api'
 
 // Managers whose delegation triggers the COO walk animation
@@ -100,6 +102,8 @@ export default function OfficeView() {
   const [showStore, setShowStore] = useState(false)
   const [decorationMode, setDecorationMode] = useState(false)
   const [showNoticeBoard, setShowNoticeBoard] = useState(false)
+  const [currentRoomId, setCurrentRoomId] = useState('engineering')
+  const [navigatorOpen, setNavigatorOpen] = useState(true)
 
   // ─── COO click-to-move state ─────────────────────────────────────────────
   const [cooPosition, setCooPosition] = useState<{ x: number; y: number } | null>({ x: 400, y: 500 })
@@ -336,6 +340,29 @@ export default function OfficeView() {
     return idle.slice(0, 5)
   }, [employees])
 
+  // ─── Room list for navigator ──────────────────────────────────────────────────
+  const roomList = useMemo(() => {
+    const deptRooms = Array.from(departments.entries()).map(([dept, emps]) => ({
+      id: dept,
+      name: getDeptDisplayName(dept),
+      department: dept,
+      type: 'department' as const,
+      occupancy: emps.length,
+      capacity: emps.length,
+    }))
+
+    const specialRooms: Array<{ id: string; name: string; department: string; type: 'department' | 'special'; occupancy: number; capacity: number }> = [
+      { id: 'coo-office', name: 'COO Office', department: 'coo', type: 'special', occupancy: 1, capacity: 1 },
+      { id: 'meeting-room', name: 'Meeting Room', department: 'meetings', type: 'special', occupancy: activeMeetings[0]?.participants.length ?? 0, capacity: 8 },
+    ]
+
+    if (breakEmployees.length > 0) {
+      specialRooms.push({ id: 'break-room', name: 'Break Room', department: 'operations', type: 'special', occupancy: breakEmployees.length, capacity: 5 })
+    }
+
+    return [...deptRooms, ...specialRooms]
+  }, [departments, activeMeetings, breakEmployees])
+
   // ─── Zoom controls handler ───────────────────────────────────────────────────
   const zoomIn  = useCallback(() => setZoomLevel((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2))), [])
   const zoomOut = useCallback(() => setZoomLevel((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2))), [])
@@ -352,58 +379,110 @@ export default function OfficeView() {
         height: '100%',
         minHeight: 0,
         width: '100%',
-        // Warm Habbo background instead of near-black
-        background: '#3A2418',
+        // Dark teal — classic Habbo page background
+        background: '#1B3A4B',
         overflow: 'hidden',
         position: 'relative',
       }}
     >
       <TitleBar connected={connected} />
 
-      {/* Floor viewport — handles zoom + pan */}
+      {/* Main content row: navigator + floor viewport */}
       <div
-        ref={floorWrapperRef}
         style={{
           flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'row',
           overflow: 'hidden',
           position: 'relative',
-          cursor: isPanningRef.current ? 'grabbing' : zoomLevel > 1 ? 'grab' : 'default',
         }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
       >
-        {/* Scaled + panned office floor */}
+        {/* Room Navigator panel */}
+        <RoomNavigator
+          rooms={roomList}
+          currentRoomId={currentRoomId}
+          onSelectRoom={setCurrentRoomId}
+          onClose={() => setNavigatorOpen(false)}
+          isOpen={navigatorOpen}
+        />
+
+        {/* Navigator toggle button (visible when navigator is closed) */}
+        {!navigatorOpen && (
+          <button
+            onClick={() => setNavigatorOpen(true)}
+            title='Open Navigator'
+            style={{
+              position: 'absolute',
+              left: '8px',
+              top: '8px',
+              zIndex: 210,
+              width: '32px',
+              height: '32px',
+              background: '#142C3A',
+              border: `2px solid #A0521A`,
+              borderRadius: '2px',
+              color: '#C8943A',
+              fontSize: '16px',
+              fontFamily: 'monospace',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: 'inset -2px -2px 0 rgba(0,0,0,0.5), inset 2px 2px 0 rgba(255,255,255,0.08), 0 0 0 1px #C8943A40',
+              lineHeight: 1,
+              pointerEvents: 'auto',
+            }}
+          >
+            🚪
+          </button>
+        )}
+
+        {/* Floor viewport — handles zoom + pan; shifts right when navigator open */}
         <div
+          ref={floorWrapperRef}
           style={{
-            width: '100%',
-            height: '100%',
-            transformOrigin: 'center center',
-            transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px)`,
-            transition: isPanningRef.current ? 'none' : 'transform 0.15s ease-out',
-            willChange: 'transform',
+            flex: 1,
+            overflow: 'hidden',
+            position: 'relative',
+            cursor: isPanningRef.current ? 'grabbing' : zoomLevel > 1 ? 'grab' : 'default',
           }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
         >
-          <OfficeFloor
-            employees={employees}
-            activeMeetings={activeMeetings}
-            onSelectEmployee={handleSelectEmployee}
-            cooTargetEmployee={cooWalkTarget}
-            departments={departments}
-            decorations={officeState?.decorations}
-            storeItems={storeCatalog}
-            decorationMode={decorationMode}
-            onRoomClick={handleRoomClick}
-            onNoticeBoard={() => setShowNoticeBoard(true)}
-            breakEmployees={breakEmployees}
-            cooPosition={cooPosition}
-            cooDirection={cooDirection}
-            cooWalking={cooWalking}
-            cooDestination={cooDestination}
-            onTileClick={handleTileClick}
-          />
-        </div>
+          {/* Scaled + panned office floor */}
+          <div
+            style={{
+              width: '100%',
+              height: '100%',
+              transformOrigin: 'center center',
+              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px)`,
+              transition: isPanningRef.current ? 'none' : 'transform 0.15s ease-out',
+              willChange: 'transform',
+            }}
+          >
+            <OfficeFloor
+              employees={employees}
+              activeMeetings={activeMeetings}
+              onSelectEmployee={handleSelectEmployee}
+              cooTargetEmployee={cooWalkTarget}
+              departments={departments}
+              decorations={officeState?.decorations}
+              storeItems={storeCatalog}
+              decorationMode={decorationMode}
+              onRoomClick={handleRoomClick}
+              onNoticeBoard={() => setShowNoticeBoard(true)}
+              breakEmployees={breakEmployees}
+              cooPosition={cooPosition}
+              cooDirection={cooDirection}
+              cooWalking={cooWalking}
+              cooDestination={cooDestination}
+              onTileClick={handleTileClick}
+              currentRoomId={currentRoomId}
+            />
+          </div>
 
         {/* Employee detail panel — rendered outside the scaled layer so it stays sharp */}
         {selectedEmployee && !showStore && (
@@ -469,7 +548,11 @@ export default function OfficeView() {
           </div>
           <ZoomButton label='-' onClick={zoomOut} disabled={zoomLevel <= ZOOM_MIN} />
         </div>
+        {/* End zoom controls */}
       </div>
+      {/* End floor viewport */}
+      </div>
+      {/* End main content row */}
 
       <StatusBar
         employees={employees}

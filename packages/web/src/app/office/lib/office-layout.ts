@@ -14,6 +14,10 @@ export const TILE_WIDTH = 64
 /** Height of one isometric tile in pixels (the vertical diagonal of the diamond) */
 export const TILE_HEIGHT = 32
 
+/** Standard room grid dimensions */
+export const ROOM_GRID_COLS = 10
+export const ROOM_GRID_ROWS = 10
+
 // ---------------------------------------------------------------------------
 // Isometric coordinate conversion utilities
 // ---------------------------------------------------------------------------
