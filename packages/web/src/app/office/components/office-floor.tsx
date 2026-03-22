@@ -275,15 +275,18 @@ export const OfficeFloor = memo(function OfficeFloor({
       </div>
 
       {/* Scrollable floor area */}
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '8px', display: 'grid', gridTemplateRows: '1fr auto 1fr', gap: '6px' }}>
 
         {/* Department rooms — flow grid that adapts to any number of departments */}
         {rooms.length > 0 && (
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(min(200px, 100%), 1fr))',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gridTemplateRows: 'repeat(auto-fill, 1fr)',
               gap: '6px',
+              height: '100%',
+              minHeight: 0,
             }}
           >
             {rooms.map((room, i) => (
@@ -359,8 +362,10 @@ export const OfficeFloor = memo(function OfficeFloor({
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(min(200px, 100%), 1fr))',
+            gridTemplateColumns: 'repeat(2, 1fr)',
             gap: '6px',
+            height: '100%',
+            minHeight: 0,
           }}
         >
           <CooOffice

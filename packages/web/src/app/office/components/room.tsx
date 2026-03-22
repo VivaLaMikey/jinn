@@ -326,6 +326,9 @@ export const Room = memo(function Room({
       style={{
         gridColumn,
         position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
         border: `1px solid ${deptColor}25`,
         borderTop: `3px solid ${deptColor}`,
         borderRadius: '4px',
@@ -439,6 +442,7 @@ export const Room = memo(function Room({
           gap: '4px',
           padding: '8px 8px 20px',
           alignContent: 'flex-start',
+          flex: 1,
         }}
       >
         {roomEmployees.map((emp) => (
