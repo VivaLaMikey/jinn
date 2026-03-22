@@ -302,6 +302,8 @@ export interface UpdateSessionFields {
   engineSessionId?: string | null;
   status?: Session['status'];
   model?: string | null;
+  source?: string;
+  connector?: string | null;
   replyContext?: ReplyContext | null;
   messageId?: string | null;
   transportMeta?: JsonObject | null;
@@ -329,6 +331,14 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.model !== undefined) {
     sets.push('model = ?');
     values.push(updates.model);
+  }
+  if (updates.source !== undefined) {
+    sets.push('source = ?');
+    values.push(updates.source);
+  }
+  if (updates.connector !== undefined) {
+    sets.push('connector = ?');
+    values.push(updates.connector);
   }
   if (updates.replyContext !== undefined) {
     sets.push('reply_context = ?');

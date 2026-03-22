@@ -334,6 +334,8 @@ export interface JinnConfig {
     fallbackEngine?: "codex";
     /** Days of inactivity before completed/error/idle sessions are auto-deleted. Default: 7. 0 = disabled. */
     sessionTTLDays?: number;
+    /** When true, all non-employee non-cron messages share a single "unified:primary" session across connectors. */
+    unified?: boolean;
   };
   cron?: {
     defaultDelivery?: CronDelivery;

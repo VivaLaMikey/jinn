@@ -137,6 +137,11 @@ export class SessionManager {
   }
 
   async route(msg: IncomingMessage, connector: Connector, opts: RouteOptions = {}): Promise<{ sessionId: string } | void> {
+    // Unified session mode: all non-employee, non-cron messages share a single session
+    if (this.config.sessions?.unified && !opts.employee && msg.source !== "cron") {
+      msg = { ...msg, sessionKey: "unified:primary" };
+    }
+
     if (await this.handleCommand(msg, connector)) return;
 
     let session = getSessionBySessionKey(msg.sessionKey);
@@ -178,6 +183,8 @@ export class SessionManager {
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,
         transportMeta: mergedMeta,
+        // In unified mode, update source/connector to match the current message origin
+        ...(this.config.sessions?.unified ? { source: msg.source, connector: msg.connector } : {}),
         ...(opts.model ? { model: opts.model } : {}),
       }) ?? session;
     }
