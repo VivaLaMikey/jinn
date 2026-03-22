@@ -5,8 +5,8 @@ import { useOrg } from '@/hooks/use-employees'
 import { useSessions } from '@/hooks/use-sessions'
 import { useGateway } from '@/hooks/use-gateway'
 import { api } from '@/lib/api'
-import { useQuery } from '@tanstack/react-query'
-import { ROOMS } from '../lib/office-layout'
+import { useQuery, useQueries } from '@tanstack/react-query'
+import { buildRoomsFromEmployees } from '../lib/office-layout'
 
 export type EmployeeStatus = 'idle' | 'working' | 'meeting' | 'error'
 
@@ -17,6 +17,8 @@ export interface OfficeEmployee {
   status: EmployeeStatus
   taskSnippet: string | null
   sessionId: string | null
+  rank?: string
+  isManager: boolean
 }
 
 export interface ActiveMeeting {
@@ -25,25 +27,45 @@ export interface ActiveMeeting {
   participants: string[]
 }
 
-// Build a lookup from employee name → department from room definitions
-const EMPLOYEE_DEPT_MAP: Record<string, string> = {}
-for (const room of ROOMS) {
-  for (const emp of room.employees) {
-    EMPLOYEE_DEPT_MAP[emp] = room.department
-  }
-}
-
 export function useOfficeState() {
   const { data: org } = useOrg()
   const { data: sessions } = useSessions()
   const { data: meetings } = useQuery({
     queryKey: ['meetings', 'active'],
     queryFn: () => api.getMeetings('active'),
-    refetchInterval: 30_000,
+    // Meetings don't change that often — poll every 60s
+    refetchInterval: 60_000,
   })
   const { subscribe, connected } = useGateway()
   const [version, setVersion] = useState(0)
   const statusOverrides = useRef<Map<string, EmployeeStatus>>(new Map())
+
+  // Fetch all employee details in parallel to get department info
+  const employeeNames = org?.employees ?? []
+  const employeeDetailResults = useQueries({
+    queries: employeeNames.map((name) => ({
+      queryKey: ['org', 'employee', name],
+      queryFn: () => api.getEmployee(name),
+      staleTime: 5 * 60 * 1000, // 5 minutes — personas don't change often
+    })),
+  })
+
+  // Build a name→department map and name→rank map from the fetched detail results
+  const { deptMap, rankMap } = useMemo(() => {
+    const dept = new Map<string, string>()
+    const rank = new Map<string, string>()
+    for (const result of employeeDetailResults) {
+      if (result.data) {
+        const d = result.data as unknown as Record<string, unknown>
+        const name = result.data.name
+        dept.set(name, (d.department as string) ?? '')
+        if (d.rank) rank.set(name, d.rank as string)
+      }
+    }
+    return { deptMap: dept, rankMap: rank }
+    // employeeDetailResults reference changes every render — track by org employees list
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeDetailResults.map((r) => r.dataUpdatedAt).join(',')])
 
   // WebSocket listener for immediate status updates
   useEffect(() => {
@@ -137,12 +159,26 @@ export function useOfficeState() {
         .map((w) => w[0].toUpperCase() + w.slice(1))
         .join(' ')
 
-      const department = EMPLOYEE_DEPT_MAP[name] || ''
+      const department = deptMap.get(name) ?? ''
 
-      return { name, displayName, department, status, taskSnippet, sessionId }
+      // rank — populated if org API returns it per-employee
+      const rank: string | undefined = rankMap.get(name)
+      const isManager = rank === 'manager' || rank === 'senior'
+
+      return { name, displayName, department, status, taskSnippet, sessionId, rank, isManager }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [org, sessions, meetings, version])
+  }, [org, sessions, meetings, version, deptMap, rankMap])
+
+  // Build department → employee names map (excludes 'coo' department)
+  const departments = useMemo((): Map<string, string[]> => {
+    const empList = employees.map((e) => ({
+      name: e.name,
+      department: e.department,
+    }))
+    const { roomEmployees } = buildRoomsFromEmployees(empList)
+    return roomEmployees
+  }, [employees])
 
   const activeMeetings = useMemo((): ActiveMeeting[] => {
     if (!Array.isArray(meetings)) return []
@@ -155,5 +191,5 @@ export function useOfficeState() {
     }))
   }, [meetings])
 
-  return { employees, activeMeetings, connected }
+  return { employees, activeMeetings, connected, departments, subscribe }
 }

@@ -13,7 +13,9 @@ const OfficeView = dynamic(() => import("./office-view"), {
 })
 
 export default function OfficePage() {
-  useBreadcrumbs([{ label: "Office" }])
+  // Pass empty breadcrumbs so the desktop header bar is hidden — the office
+  // is immersive and has its own title bar chrome.
+  useBreadcrumbs([])
   return (
     <PageLayout>
       <OfficeView />

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { useOfficeState } from './hooks/use-office-state'
 import { TitleBar } from './components/title-bar'
 import { OfficeFloor } from './components/office-floor'
@@ -9,8 +9,15 @@ import { EmployeePanel } from './components/employee-panel'
 import { TaskAssigner } from './components/task-assigner'
 import { MeetingCreator } from './components/meeting-creator'
 
+// Managers whose delegation triggers the COO walk animation
+const MANAGER_NAMES = new Set([
+  'head-of-development',
+  'head-of-research',
+  'head-of-legal',
+])
+
 export default function OfficeView() {
-  const { employees, activeMeetings, connected } = useOfficeState()
+  const { employees, activeMeetings, connected, departments, subscribe } = useOfficeState()
 
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
   const [showMeetingCreator, setShowMeetingCreator] = useState(false)
@@ -27,7 +34,7 @@ export default function OfficeView() {
 
   const handleAssignTask = useCallback((name: string) => {
     setTaskAssignerTarget(name)
-    // Trigger Jinn to "walk" toward the employee's room
+    // Trigger COO walk toward the employee's room
     setCooWalkTarget(name)
     setTimeout(() => setCooWalkTarget(null), 4000)
   }, [])
@@ -35,6 +42,23 @@ export default function OfficeView() {
   const handleCloseTaskAssigner = useCallback(() => {
     setTaskAssignerTarget(null)
   }, [])
+
+  // Listen for session:created events — if any manager delegates, trigger COO walk
+  useEffect(() => {
+    if (!subscribe) return
+    return subscribe((event: string, payload: unknown) => {
+      if (event !== 'session:created') return
+      const p = payload as Record<string, unknown> | null
+      if (!p) return
+      const employee = typeof p.employee === 'string' ? p.employee : null
+      const creator = typeof p.creator === 'string' ? p.creator : null
+      // If a manager created the session, animate the COO walking to that employee
+      if (creator && MANAGER_NAMES.has(creator) && employee) {
+        setCooWalkTarget(employee)
+        setTimeout(() => setCooWalkTarget(null), 4000)
+      }
+    })
+  }, [subscribe])
 
   const selectedEmployeeData =
     selectedEmployee
@@ -61,6 +85,7 @@ export default function OfficeView() {
           activeMeetings={activeMeetings}
           onSelectEmployee={handleSelectEmployee}
           cooTargetEmployee={cooWalkTarget}
+          departments={departments}
         />
 
         {/* Employee detail panel */}
@@ -78,7 +103,7 @@ export default function OfficeView() {
         onCallMeeting={() => setShowMeetingCreator(true)}
       />
 
-      {/* Task assigner popover */}
+      {/* Task assigner modal */}
       {taskAssignerTarget && (
         <TaskAssigner
           employeeName={taskAssignerTarget}
