@@ -1,10 +1,20 @@
 'use client'
 
-import React, { memo } from 'react'
+import React, { memo, useMemo } from 'react'
 import { Desk } from './desk'
 import type { OfficeEmployee } from '../hooks/use-office-state'
 import type { RoomDef } from '../lib/office-layout'
-import { getDeptColor, FLOOR_COLORS, WALL_COLORS } from '../lib/pixel-palette'
+import {
+  getDeptColor,
+  FLOOR_COLORS,
+  WALL_COLORS,
+} from '../lib/pixel-palette'
+import {
+  TILE_WIDTH,
+  TILE_HEIGHT,
+  gridToScreen,
+  getTileClipPath,
+} from '../lib/office-layout'
 import type { Decoration, StoreItem } from '@/lib/api'
 
 interface RoomProps {
@@ -25,54 +35,107 @@ interface RoomProps {
   onRoomClick?: (room: string, x: number, y: number) => void
 }
 
-// Enhanced corner plant with more detail
-function CornerPlant() {
+// ---------------------------------------------------------------------------
+// Room grid configuration
+// ---------------------------------------------------------------------------
+const ROOM_COLS = 6   // tiles across
+const ROOM_ROWS = 5   // tiles deep
+
+// Compute the total pixel width and height needed to contain the isometric grid
+// Width  = (cols + rows) * TILE_WIDTH / 2
+// Height = (cols + rows) * TILE_HEIGHT / 2  + wall height overhead
+const ISO_GRID_W  = (ROOM_COLS + ROOM_ROWS) * (TILE_WIDTH / 2)
+const ISO_GRID_H  = (ROOM_COLS + ROOM_ROWS) * (TILE_HEIGHT / 2)
+const WALL_HEIGHT = 80  // pixel height of the back/left walls
+const ROOM_PAD_TOP = 24 // extra top padding above the walls for the room header
+
+// Total room container height
+const ROOM_CONTAINER_H = ISO_GRID_H + WALL_HEIGHT + ROOM_PAD_TOP + 48  // +48 for name labels below desks
+
+// ---------------------------------------------------------------------------
+// Floor tile component — diamond shaped
+// ---------------------------------------------------------------------------
+interface TileProps {
+  gridX: number
+  gridY: number
+  tileColor: string
+  highlightColor: string
+}
+
+function FloorTile({ gridX, gridY, tileColor, highlightColor }: TileProps) {
+  const { x, y } = gridToScreen(gridX, gridY)
+
+  // Alternate tile shading (checkerboard effect, Habbo-style)
+  const isEven = (gridX + gridY) % 2 === 0
+  const bg = isEven ? tileColor : highlightColor
+
   return (
     <div
       style={{
         position: 'absolute',
-        bottom: '8px',
-        right: '8px',
-        width: '16px',
-        height: '20px',
+        left: `${x}px`,
+        top: `${y}px`,
+        width: `${TILE_WIDTH}px`,
+        height: `${TILE_HEIGHT}px`,
+        background: bg,
+        clipPath: getTileClipPath(),
+        // 1px inset border effect — we use a box-shadow on the inside
+        // (clip-path clips overflow so we use filter instead)
+        filter: 'brightness(1)',
+      }}
+      aria-hidden
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Isometric corner plant (visible from 3/4 angle)
+// ---------------------------------------------------------------------------
+function IsometricCornerPlant() {
+  return (
+    <div
+      style={{
+        position: 'relative',
+        width: '20px',
+        height: '28px',
         pointerEvents: 'none',
       }}
       aria-hidden
     >
-      {/* Pot base */}
+      {/* Pot — isometric box */}
       <div
         style={{
           position: 'absolute',
           bottom: 0,
           left: '2px',
-          width: '12px',
-          height: '6px',
-          background: '#6b3a1a',
-          borderRadius: '0 0 3px 3px',
-          boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.4)',
+          width: '14px',
+          height: '8px',
+          background: '#8B5028',
+          border: '1px solid #6B3810',
+          borderRadius: '0 0 2px 2px',
         }}
       />
-      {/* Pot rim */}
+      {/* Pot top face (isometric) */}
       <div
         style={{
           position: 'absolute',
-          bottom: '6px',
-          left: '1px',
-          width: '14px',
-          height: '2px',
-          background: '#8b4a22',
-          borderRadius: '1px',
+          bottom: '7px',
+          left: '0px',
+          width: '16px',
+          height: '5px',
+          background: '#7A4520',
+          transform: 'skewX(-20deg)',
         }}
       />
       {/* Soil */}
       <div
         style={{
           position: 'absolute',
-          bottom: '7px',
-          left: '3px',
+          bottom: '10px',
+          left: '4px',
           width: '10px',
-          height: '2px',
-          background: '#1a0e06',
+          height: '3px',
+          background: '#2A1808',
           borderRadius: '1px',
         }}
       />
@@ -80,116 +143,114 @@ function CornerPlant() {
       <div
         style={{
           position: 'absolute',
-          bottom: '8px',
-          left: '7px',
+          bottom: '12px',
+          left: '9px',
           width: '2px',
-          height: '5px',
-          background: '#2d7a1a',
+          height: '6px',
+          background: '#3A8020',
         }}
       />
       {/* Left leaf */}
       <div
         style={{
           position: 'absolute',
-          bottom: '10px',
-          left: '1px',
-          width: '7px',
-          height: '5px',
-          background: '#2e8b3a',
+          bottom: '14px',
+          left: '2px',
+          width: '9px',
+          height: '6px',
+          background: '#4AAA30',
           borderRadius: '50% 0 50% 0',
-          transform: 'rotate(-10deg)',
+          transform: 'rotate(-15deg)',
         }}
       />
       {/* Right leaf */}
       <div
         style={{
           position: 'absolute',
-          bottom: '10px',
-          right: '1px',
-          width: '7px',
-          height: '5px',
-          background: '#3cb355',
-          borderRadius: '0 50% 0 50%',
-          transform: 'rotate(10deg)',
-        }}
-      />
-      {/* Top leaf cluster */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: '13px',
-          left: '4px',
-          width: '8px',
+          bottom: '14px',
+          right: '0px',
+          width: '9px',
           height: '6px',
-          background: '#44cc55',
-          borderRadius: '50%',
+          background: '#58C040',
+          borderRadius: '0 50% 0 50%',
+          transform: 'rotate(15deg)',
         }}
       />
-      {/* Highlight */}
+      {/* Top cluster */}
       <div
         style={{
           position: 'absolute',
-          bottom: '15px',
-          left: '7px',
-          width: '3px',
-          height: '3px',
-          background: '#66dd77',
+          bottom: '18px',
+          left: '5px',
+          width: '10px',
+          height: '8px',
+          background: '#66D050',
           borderRadius: '50%',
-          opacity: 0.6,
         }}
       />
     </div>
   )
 }
 
-// Department-specific wall decoration
-function RoomDecoration({ department }: { department: string }) {
+// ---------------------------------------------------------------------------
+// Department wall art — placed flat on the back wall
+// ---------------------------------------------------------------------------
+function WallDecoration({ department, deptColor }: { department: string; deptColor: string }) {
   switch (department) {
     case 'engineering':
-      // Small server rack icon
+      // Server rack
       return (
         <div
           style={{
-            position: 'absolute',
-            top: '28px',
-            right: '6px',
-            width: '10px',
-            height: '16px',
-            pointerEvents: 'none',
+            width: '28px',
+            height: '40px',
+            background: '#2A3040',
+            border: `1px solid ${deptColor}50`,
+            borderRadius: '2px',
+            padding: '2px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2px',
           }}
-          aria-hidden
         >
-          <div style={{ width: '10px', height: '3px', background: '#1a2a3a', border: '1px solid #29adff40', marginBottom: '1px', borderRadius: '1px' }} />
-          <div style={{ width: '10px', height: '3px', background: '#1a2a3a', border: '1px solid #29adff40', marginBottom: '1px', borderRadius: '1px' }}>
-            <div style={{ width: '3px', height: '2px', background: '#29adff', borderRadius: '0 1px 1px 0', marginLeft: '1px', marginTop: '0px' }} />
-          </div>
-          <div style={{ width: '10px', height: '3px', background: '#1a2a3a', border: '1px solid #29adff40', marginBottom: '1px', borderRadius: '1px' }}>
-            <div style={{ width: '2px', height: '2px', background: '#48bb78', borderRadius: '50%', marginLeft: '6px', marginTop: '0px' }} />
-          </div>
-          <div style={{ width: '10px', height: '3px', background: '#1a2a3a', border: '1px solid #29adff40', borderRadius: '1px' }} />
+          {[0, 1, 2, 3, 4].map(i => (
+            <div
+              key={i}
+              style={{
+                width: '100%',
+                height: '5px',
+                background: '#1A2030',
+                border: `1px solid ${deptColor}30`,
+                borderRadius: '1px',
+                display: 'flex',
+                alignItems: 'center',
+                paddingLeft: '2px',
+                gap: '1px',
+              }}
+            >
+              <div style={{ width: '4px', height: '2px', background: i % 2 === 0 ? deptColor : '#48B878', borderRadius: '1px' }} />
+            </div>
+          ))}
         </div>
       )
 
     case 'executive':
-      // Painting on wall
+      // Framed painting
       return (
         <div
           style={{
-            position: 'absolute',
-            top: '28px',
-            right: '8px',
-            width: '16px',
-            height: '12px',
-            pointerEvents: 'none',
+            width: '32px',
+            height: '24px',
+            background: '#5A4010',
+            border: '3px solid #8A6820',
+            borderRadius: '1px',
+            overflow: 'hidden',
+            position: 'relative',
           }}
-          aria-hidden
         >
-          <div style={{ width: '16px', height: '12px', background: '#2a1f0a', border: '2px solid #5a4010', borderRadius: '1px', overflow: 'hidden' }}>
-            <div style={{ width: '100%', height: '50%', background: 'linear-gradient(180deg, #1a2a4a, #0a1525)' }} />
-            <div style={{ width: '100%', height: '50%', background: 'linear-gradient(180deg, #0a0e18, #0d0a08)' }} />
-            <div style={{ position: 'absolute', bottom: '3px', left: '2px', width: '4px', height: '4px', background: '#ffd70060', borderRadius: '50%' }} />
-            <div style={{ position: 'absolute', bottom: '3px', right: '2px', width: '2px', height: '2px', background: '#ffd70040', borderRadius: '50%' }} />
-          </div>
+          <div style={{ width: '100%', height: '55%', background: 'linear-gradient(180deg, #2A4A8A, #102040)' }} />
+          <div style={{ width: '100%', height: '45%', background: 'linear-gradient(180deg, #102010, #0A1808)' }} />
+          <div style={{ position: 'absolute', bottom: '4px', left: '4px', width: '6px', height: '6px', background: '#E8A02060', borderRadius: '50%' }} />
         </div>
       )
 
@@ -198,105 +259,118 @@ function RoomDecoration({ department }: { department: string }) {
       return (
         <div
           style={{
-            position: 'absolute',
-            top: '28px',
-            right: '6px',
-            width: '14px',
-            height: '16px',
-            pointerEvents: 'none',
+            width: '30px',
+            height: '36px',
+            background: '#5A4020',
+            border: '1px solid #7A6030',
+            borderRadius: '1px',
+            padding: '2px',
           }}
-          aria-hidden
         >
-          <div style={{ width: '14px', height: '16px', background: '#3a2a14', border: '1px solid #5a4020', borderRadius: '1px' }}>
-            <div style={{ display: 'flex', gap: '1px', padding: '1px' }}>
-              <div style={{ width: '2px', height: '13px', background: '#8899aa' }} />
-              <div style={{ width: '2px', height: '13px', background: '#4a6080' }} />
-              <div style={{ width: '2px', height: '10px', marginTop: '3px', background: '#6a8099' }} />
-              <div style={{ width: '2px', height: '13px', background: '#8899aa' }} />
-              <div style={{ width: '2px', height: '11px', marginTop: '2px', background: '#5a7090' }} />
-            </div>
+          <div style={{ display: 'flex', gap: '1px', height: '100%', alignItems: 'flex-end' }}>
+            {['#7A9BAE', '#4A6080', '#6A8099', '#7A9BAE', '#5A7090', '#8899AA'].map((c, i) => (
+              <div
+                key={i}
+                style={{
+                  width: '3px',
+                  height: `${10 + (i % 3) * 4}px`,
+                  background: c,
+                  borderRadius: '1px 1px 0 0',
+                }}
+              />
+            ))}
           </div>
         </div>
       )
 
     case 'research':
-      // Globe
+      // Whiteboard with diagrams
       return (
         <div
           style={{
-            position: 'absolute',
-            top: '28px',
-            right: '8px',
-            width: '14px',
-            height: '16px',
-            pointerEvents: 'none',
+            width: '36px',
+            height: '24px',
+            background: '#F8F4EC',
+            border: '2px solid #8A7858',
+            borderRadius: '1px',
+            position: 'relative',
+            overflow: 'hidden',
           }}
-          aria-hidden
         >
-          <div style={{ width: '12px', height: '12px', background: '#1a3a6a', border: '1px solid #b06cff40', borderRadius: '50%', position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', top: '2px', left: '0', right: '0', height: '1px', background: '#b06cff40' }} />
-            <div style={{ position: 'absolute', top: '5px', left: '0', right: '0', height: '1px', background: '#b06cff40' }} />
-            <div style={{ position: 'absolute', top: '8px', left: '0', right: '0', height: '1px', background: '#b06cff40' }} />
-            <div style={{ position: 'absolute', top: '0', bottom: '0', left: '4px', width: '1px', background: '#b06cff30' }} />
-            <div style={{ position: 'absolute', top: '0', bottom: '0', left: '8px', width: '1px', background: '#b06cff30' }} />
-          </div>
-          <div style={{ width: '2px', height: '4px', background: '#5a5a6a', margin: '0 auto' }} />
-          <div style={{ width: '8px', height: '2px', background: '#4a4a5a', borderRadius: '1px', margin: '0 auto' }} />
+          <div style={{ position: 'absolute', top: '3px', left: '2px', width: '12px', height: '1px', background: `${deptColor}90` }} />
+          <div style={{ position: 'absolute', top: '7px', left: '4px', width: '8px', height: '1px', background: `${deptColor}70` }} />
+          <div style={{ position: 'absolute', top: '11px', left: '2px', width: '14px', height: '1px', background: `${deptColor}80` }} />
+          <div style={{ position: 'absolute', top: '3px', right: '3px', width: '10px', height: '10px', border: `1px solid ${deptColor}60`, borderRadius: '50%' }} />
         </div>
       )
 
     case 'marketing':
-      // Whiteboard
+      // Colourful mood board
       return (
         <div
           style={{
-            position: 'absolute',
-            top: '28px',
-            right: '6px',
-            width: '16px',
-            height: '12px',
-            pointerEvents: 'none',
+            width: '32px',
+            height: '28px',
+            background: '#F0EBE0',
+            border: '2px solid #C0A878',
+            borderRadius: '1px',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '2px',
+            padding: '2px',
           }}
-          aria-hidden
         >
-          <div style={{ width: '16px', height: '12px', background: '#f0f0f0', border: '2px solid #999', borderRadius: '1px', overflow: 'hidden', position: 'relative' }}>
-            <div style={{ position: 'absolute', top: '2px', left: '1px', width: '6px', height: '1px', background: '#ff6b9d80' }} />
-            <div style={{ position: 'absolute', top: '5px', left: '2px', width: '4px', height: '1px', background: '#29adff80' }} />
-            <div style={{ position: 'absolute', top: '7px', left: '1px', width: '7px', height: '1px', background: '#00e43680' }} />
-          </div>
+          {['#E05C8A', '#4A90D9', '#5BBF6A', '#E8A020', '#9B6CD4', '#E05C8A'].map((c, i) => (
+            <div key={i} style={{ background: c, opacity: 0.7, borderRadius: '1px' }} />
+          ))}
         </div>
       )
 
     case 'operations':
-      // Calendar
+      // Calendar / gantt
       return (
         <div
           style={{
-            position: 'absolute',
-            top: '28px',
-            right: '6px',
-            width: '14px',
-            height: '14px',
-            pointerEvents: 'none',
+            width: '30px',
+            height: '28px',
+            background: '#F8F8F0',
+            border: '1px solid #C0B090',
+            borderRadius: '1px',
+            overflow: 'hidden',
           }}
-          aria-hidden
         >
-          <div style={{ width: '14px', height: '14px', background: '#f8f8f0', border: '1px solid #ccc', borderRadius: '1px', overflow: 'hidden' }}>
-            <div style={{ width: '14px', height: '4px', background: '#00e436' }} />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', padding: '1px' }}>
-              {[...Array(6)].map((_, i) => (
-                <div key={i} style={{ width: '3px', height: '2px', background: i === 2 ? '#00e436' : '#ccc', borderRadius: '0.5px' }} />
-              ))}
-            </div>
+          <div style={{ width: '100%', height: '7px', background: deptColor }} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1px', padding: '2px' }}>
+            {[...Array(8)].map((_, i) => (
+              <div key={i} style={{ height: '3px', background: i === 3 ? deptColor : '#D0C8B0', borderRadius: '0.5px' }} />
+            ))}
           </div>
         </div>
       )
 
     default:
-      return null
+      // Generic pinboard
+      return (
+        <div
+          style={{
+            width: '24px',
+            height: '20px',
+            background: '#C8A870',
+            border: '1px solid #A08850',
+            borderRadius: '1px',
+            position: 'relative',
+          }}
+        >
+          <div style={{ position: 'absolute', top: '3px', left: '3px', width: '5px', height: '5px', background: deptColor, borderRadius: '50%', opacity: 0.8 }} />
+          <div style={{ position: 'absolute', top: '8px', right: '3px', width: '4px', height: '4px', background: `${deptColor}80`, borderRadius: '50%' }} />
+        </div>
+      )
   }
 }
 
+// ---------------------------------------------------------------------------
+// Main Room component
+// ---------------------------------------------------------------------------
 export const Room = memo(function Room({
   room,
   employeeNames,
@@ -312,6 +386,22 @@ export const Room = memo(function Room({
   const nameSet = new Set(employeeNames)
   const roomEmployees = employees.filter((e) => nameSet.has(e.name))
 
+  // Pre-compute all floor tile positions for a ROOM_COLS x ROOM_ROWS grid
+  const tiles = useMemo(() => {
+    const result: { gridX: number; gridY: number }[] = []
+    for (let row = 0; row < ROOM_ROWS; row++) {
+      for (let col = 0; col < ROOM_COLS; col++) {
+        result.push({ gridX: col, gridY: row })
+      }
+    }
+    return result
+  }, [])
+
+  // Isometric grid origin offset so the left-most corner starts at a safe X
+  // The grid left corner is at gridToScreen(0, ROOM_ROWS-1) — shift everything right
+  const gridOriginX = (ROOM_ROWS - 1) * (TILE_WIDTH / 2) + 8
+  const gridOriginY = WALL_HEIGHT + ROOM_PAD_TOP
+
   const handleRoomClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!decorationMode || !onRoomClick) return
     const rect = e.currentTarget.getBoundingClientRect()
@@ -320,85 +410,86 @@ export const Room = memo(function Room({
     onRoomClick(room.name, x, y)
   }
 
+  // Position for each employee desk on the grid
+  // Desks are placed in a left-to-right, front-to-back sweep
+  const deskPositions = useMemo(() => {
+    const positions: { gridX: number; gridY: number }[] = []
+    // Spread desks starting from col 1 row 1, two per row
+    let col = 1
+    let row = 1
+    for (let i = 0; i < roomEmployees.length; i++) {
+      positions.push({ gridX: col, gridY: row })
+      col += 2
+      if (col >= ROOM_COLS - 1) {
+        col = 1
+        row++
+      }
+    }
+    return positions
+  }, [roomEmployees.length])
+
   return (
     <div
       onClick={handleRoomClick}
       style={{
         gridColumn,
         position: 'relative',
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        border: `1px solid ${deptColor}25`,
-        borderTop: `3px solid ${deptColor}`,
-        borderRadius: '4px',
-        // Tile-pattern floor using CSS gradient
-        background: `
-          repeating-linear-gradient(
-            90deg,
-            transparent,
-            transparent 15px,
-            ${deptColor}04 15px,
-            ${deptColor}04 16px
-          ),
-          repeating-linear-gradient(
-            0deg,
-            transparent,
-            transparent 15px,
-            ${deptColor}04 15px,
-            ${deptColor}04 16px
-          ),
-          ${FLOOR_COLORS.tile_light}
-        `,
-        overflow: 'hidden',
-        minHeight: '120px',
+        width: `${ISO_GRID_W + 32}px`,
+        height: `${ROOM_CONTAINER_H}px`,
+        flexShrink: 0,
         cursor: decorationMode ? 'crosshair' : 'default',
-        outline: decorationMode ? `2px dashed ${deptColor}40` : 'none',
+        outline: decorationMode ? `2px dashed ${deptColor}60` : 'none',
         outlineOffset: '-4px',
+        // Warm drop shadow — Habbo-style room card feel
+        filter: `drop-shadow(0 8px 24px rgba(100,60,20,0.3))`,
       }}
     >
-      {/* Wall trim at top */}
+      {/* ---- BACK WALL (top-left face, angled) ---- */}
+      {/* The back wall runs from the top-left corner to the top-right corner of the floor grid */}
+      {/* In isometric: it's the face seen behind the floor, going up */}
       <div
         style={{
           position: 'absolute',
-          top: '3px', // just below the coloured top border
-          left: 0,
-          right: 0,
-          height: '2px',
-          background: WALL_COLORS.trim,
-          opacity: 0.5,
+          top: `${ROOM_PAD_TOP}px`,
+          left: `${gridOriginX}px`,
+          width: `${(ROOM_COLS) * (TILE_WIDTH / 2)}px`,
+          height: `${WALL_HEIGHT + (ROOM_COLS - 1) * (TILE_HEIGHT / 2)}px`,
+          background: `linear-gradient(160deg, ${WALL_COLORS.accent} 0%, ${WALL_COLORS.base} 100%)`,
+          borderTop: `3px solid ${deptColor}`,
+          clipPath: `polygon(0% 100%, ${ROOM_COLS * (TILE_WIDTH / 2)}px 0%, ${ROOM_COLS * (TILE_WIDTH / 2) + ROOM_COLS * (TILE_HEIGHT / 2)}px ${ROOM_COLS * (TILE_HEIGHT / 2)}px, ${ROOM_COLS * (TILE_HEIGHT / 2)}px 100%)`,
+          zIndex: 0,
+          overflow: 'hidden',
         }}
         aria-hidden
-      />
-
-      {/* Room header / nameplate */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '4px 8px 3px',
-          background: `color-mix(in srgb, ${deptColor} 8%, ${WALL_COLORS.base})`,
-          borderBottom: `1px solid ${deptColor}30`,
-        }}
       >
-        {/* Nameplate label */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px',
-          }}
-        >
+        {/* Horizontal wall stripe lines for texture */}
+        {[20, 36, 52, 68].map(h => (
           <div
+            key={h}
             style={{
-              width: '3px',
-              height: '10px',
-              background: deptColor,
-              borderRadius: '1px',
-              opacity: 0.8,
+              position: 'absolute',
+              top: `${h}px`,
+              left: 0,
+              right: 0,
+              height: '1px',
+              background: `${WALL_COLORS.trim}80`,
             }}
           />
+        ))}
+        {/* Department name plaque on the wall */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '14px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: `${deptColor}20`,
+            border: `1px solid ${deptColor}60`,
+            borderRadius: '2px',
+            padding: '2px 8px',
+            whiteSpace: 'nowrap',
+          }}
+        >
           <span
             style={{
               fontFamily: 'monospace',
@@ -406,112 +497,194 @@ export const Room = memo(function Room({
               fontWeight: 700,
               color: deptColor,
               textTransform: 'uppercase',
-              letterSpacing: '0.08em',
+              letterSpacing: '0.1em',
             }}
           >
             {room.name}
           </span>
         </div>
-        {/* Occupancy badge */}
+        {/* Wall art */}
         <div
           style={{
-            background: `${deptColor}20`,
-            border: `1px solid ${deptColor}40`,
-            borderRadius: '8px',
-            padding: '1px 5px',
+            position: 'absolute',
+            top: '8px',
+            right: '24px',
+          }}
+        >
+          <WallDecoration department={room.department} deptColor={deptColor} />
+        </div>
+      </div>
+
+      {/* ---- LEFT WALL (angled, dark side) ---- */}
+      {/* Runs from top-left corner of floor downward-left */}
+      <div
+        style={{
+          position: 'absolute',
+          top: `${ROOM_PAD_TOP + WALL_HEIGHT - (ROOM_ROWS) * (TILE_HEIGHT / 2)}px`,
+          left: `${gridOriginX - (ROOM_ROWS) * (TILE_WIDTH / 2)}px`,
+          width: `${(ROOM_ROWS) * (TILE_WIDTH / 2) + 4}px`,
+          height: `${WALL_HEIGHT + (ROOM_ROWS) * (TILE_HEIGHT / 2)}px`,
+          background: `linear-gradient(200deg, ${WALL_COLORS.base} 0%, ${WALL_COLORS.trim} 100%)`,
+          clipPath: `polygon(100% 0%, 100% 100%, 0% ${(ROOM_ROWS) * (TILE_HEIGHT / 2) + WALL_HEIGHT}px, 0% ${WALL_HEIGHT}px)`,
+          filter: 'brightness(0.88)',
+          zIndex: 0,
+        }}
+        aria-hidden
+      >
+        {/* Vertical divider lines for panelled wall effect */}
+        {[25, 55, 85].map(x => (
+          <div
+            key={x}
+            style={{
+              position: 'absolute',
+              left: `${x}%`,
+              top: 0,
+              bottom: 0,
+              width: '1px',
+              background: `${WALL_COLORS.trim}60`,
+              transform: 'skewY(60deg)',
+            }}
+          />
+        ))}
+      </div>
+
+      {/* ---- FLOOR TILES ---- */}
+      <div
+        style={{
+          position: 'absolute',
+          top: `${gridOriginY}px`,
+          left: `${gridOriginX}px`,
+          width: `${ISO_GRID_W}px`,
+          height: `${ISO_GRID_H}px`,
+          zIndex: 1,
+        }}
+        aria-hidden
+      >
+        {tiles.map(({ gridX, gridY }) => {
+          const { x, y } = gridToScreen(gridX, gridY)
+          return (
+            <FloorTile
+              key={`${gridX}-${gridY}`}
+              gridX={gridX}
+              gridY={gridY}
+              tileColor={FLOOR_COLORS.tile_light}
+              highlightColor={FLOOR_COLORS.tile_dark}
+            />
+          )
+        })}
+
+        {/* Floor tile grid lines — subtle border on each tile using an overlay */}
+        {tiles.map(({ gridX, gridY }) => {
+          const { x, y } = gridToScreen(gridX, gridY)
+          return (
+            <div
+              key={`line-${gridX}-${gridY}`}
+              style={{
+                position: 'absolute',
+                left: `${x}px`,
+                top: `${y}px`,
+                width: `${TILE_WIDTH}px`,
+                height: `${TILE_HEIGHT}px`,
+                clipPath: getTileClipPath(),
+                border: `1px solid ${FLOOR_COLORS.carpet}60`,
+                boxSizing: 'border-box',
+                pointerEvents: 'none',
+              }}
+            />
+          )
+        })}
+      </div>
+
+      {/* ---- DESKS (placed on floor tiles) ---- */}
+      {roomEmployees.map((emp, idx) => {
+        const pos = deskPositions[idx]
+        if (!pos) return null
+
+        // Convert desk grid position to screen, then offset by room origin
+        const { x: tileX, y: tileY } = gridToScreen(pos.gridX, pos.gridY)
+
+        // Center the desk over its tile
+        // The desk container is ISO_DESK_W x ISO_DESK_H pixels
+        const deskLeft = gridOriginX + tileX + (TILE_WIDTH - 72) / 2
+        const deskTop  = gridOriginY + tileY - 80  // move desk "up" — sprite sits above tile
+
+        return (
+          <div
+            key={emp.name}
+            style={{
+              position: 'absolute',
+              left: `${deskLeft}px`,
+              top: `${deskTop}px`,
+              zIndex: 2 + pos.gridY,  // further-back desks have lower z-index (depth sorting)
+            }}
+          >
+            <Desk employee={emp} onClick={onSelectEmployee} />
+          </div>
+        )
+      })}
+
+      {/* Empty room notice */}
+      {roomEmployees.length === 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 5,
           }}
         >
           <span
             style={{
               fontFamily: 'monospace',
-              fontSize: '8px',
-              color: deptColor,
-              opacity: 0.9,
-            }}
-          >
-            {roomEmployees.length}/{employeeNames.length}
-          </span>
-        </div>
-      </div>
-
-      {/* Desks */}
-      <div
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '4px',
-          padding: '8px 8px 20px',
-          alignContent: 'flex-start',
-          flex: 1,
-        }}
-      >
-        {roomEmployees.map((emp) => (
-          <Desk
-            key={emp.name}
-            employee={emp}
-            onClick={onSelectEmployee}
-          />
-        ))}
-        {roomEmployees.length === 0 && (
-          <span
-            style={{
-              fontFamily: 'monospace',
-              fontSize: '8px',
-              color: 'var(--text-tertiary, #444)',
-              padding: '8px',
+              fontSize: '9px',
+              color: WALL_COLORS.trim,
               opacity: 0.6,
             }}
           >
             empty
           </span>
-        )}
+        </div>
+      )}
+
+      {/* Corner plant — placed at the near-right corner of the room */}
+      <div
+        style={{
+          position: 'absolute',
+          left: `${gridOriginX + (ROOM_COLS - 1) * (TILE_WIDTH / 2) - 10}px`,
+          top:  `${gridOriginY + (ROOM_COLS + ROOM_ROWS - 2) * (TILE_HEIGHT / 2) - 12}px`,
+          zIndex: 10,
+          pointerEvents: 'none',
+        }}
+        aria-hidden
+      >
+        <IsometricCornerPlant />
       </div>
 
-      {/* Corner plant */}
-      <CornerPlant />
-
-      {/* Department-specific wall decoration */}
-      <RoomDecoration department={room.department} />
-
-      {/* Door gap in bottom border */}
+      {/* Occupancy badge — top-right overlay */}
       <div
         style={{
           position: 'absolute',
-          bottom: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: '20px',
-          height: '3px',
-          background: FLOOR_COLORS.tile_dark,
-          borderRadius: '2px 2px 0 0',
+          top: '4px',
+          right: '8px',
+          background: `${deptColor}20`,
+          border: `1px solid ${deptColor}50`,
+          borderRadius: '8px',
+          padding: '2px 6px',
+          zIndex: 20,
         }}
-        aria-hidden
-      />
-      {/* Door frame pillars */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 'calc(50% - 12px)',
-          width: '2px',
-          height: '6px',
-          background: deptColor,
-          opacity: 0.4,
-        }}
-        aria-hidden
-      />
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 'calc(50% + 10px)',
-          width: '2px',
-          height: '6px',
-          background: deptColor,
-          opacity: 0.4,
-        }}
-        aria-hidden
-      />
+      >
+        <span
+          style={{
+            fontFamily: 'monospace',
+            fontSize: '8px',
+            color: deptColor,
+            fontWeight: 600,
+          }}
+        >
+          {roomEmployees.length}/{employeeNames.length}
+        </span>
+      </div>
 
       {/* Placed decorations */}
       {decorations?.map((dec) => (
@@ -521,12 +694,13 @@ export const Room = memo(function Room({
             position: 'absolute',
             left: `${dec.x}%`,
             top: `${dec.y}%`,
-            fontSize: '14px',
+            fontSize: '16px',
             pointerEvents: decorationMode ? 'auto' : 'none',
             cursor: decorationMode ? 'pointer' : 'default',
-            zIndex: 5,
+            zIndex: 15,
             transform: 'translate(-50%, -50%)',
             userSelect: 'none',
+            filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))',
           }}
           title={storeItems?.find((i) => i.id === dec.itemId)?.name}
         >

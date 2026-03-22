@@ -35,18 +35,22 @@ interface EmployeeSpriteProps {
   scale?: 2 | 3 | 4
   /** When provided, overrides the deterministic palette with appearance data */
   appearance?: EmployeeAppearance
+  /** Walk direction — only relevant when status would normally show idle/work */
+  direction?: 'se' | 'sw' | 'ne' | 'nw'
+  /** Show relaxed pose (break room / off-duty) */
+  relaxed?: boolean
 }
 
-// Native canvas dimensions
-const SPRITE_W = 16
-const SPRITE_H = 24
+// Native canvas dimensions — isometric sprite is 20x28
+const SPRITE_W = 20
+const SPRITE_H = 28
 
 // Animation config per status
 const ANIM_CONFIG: Record<EmployeeStatus, { key: string; intervalMs: number }> = {
-  idle: { key: 'idle', intervalMs: 1500 },
-  working: { key: 'work', intervalMs: 400 },
+  idle:    { key: 'idle',    intervalMs: 1500 },
+  working: { key: 'work',    intervalMs: 400  },
   meeting: { key: 'meeting', intervalMs: 2000 },
-  error: { key: 'error', intervalMs: 300 },
+  error:   { key: 'error',   intervalMs: 300  },
 }
 
 export const EmployeeSprite = memo(function EmployeeSprite({
@@ -55,6 +59,8 @@ export const EmployeeSprite = memo(function EmployeeSprite({
   status,
   scale = 3,
   appearance,
+  direction,
+  relaxed,
 }: EmployeeSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameIndexRef = useRef(0)
@@ -64,13 +70,26 @@ export const EmployeeSprite = memo(function EmployeeSprite({
   const displayW = SPRITE_W * scale
   const displayH = SPRITE_H * scale
 
+  // Resolve which animation key to use
+  const resolveAnimKey = useCallback((): string => {
+    if (relaxed) return 'relaxed'
+    if (direction) return `walk_${direction}`
+    return ANIM_CONFIG[status].key
+  }, [status, direction, relaxed])
+
+  const resolveIntervalMs = useCallback((): number => {
+    if (relaxed) return 2000
+    if (direction) return 350
+    return ANIM_CONFIG[status].intervalMs
+  }, [status, direction, relaxed])
+
   const drawCurrentFrame = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const { key } = ANIM_CONFIG[status]
+    const key = resolveAnimKey()
     const frames = SPRITE_FRAMES[key]
     if (!frames || frames.length === 0) return
 
@@ -86,17 +105,18 @@ export const EmployeeSprite = memo(function EmployeeSprite({
       const palette = generateCharacterPalette(name, department)
       drawSpriteFrame(ctx, frame, palette, 0, 0)
     }
-  }, [name, department, status, appearance])
+  }, [name, department, status, appearance, resolveAnimKey])
 
   // Start animation loop
   useEffect(() => {
     frameIndexRef.current = 0
     drawCurrentFrame()
 
-    const { key, intervalMs } = ANIM_CONFIG[status]
+    const key = resolveAnimKey()
     const frames = SPRITE_FRAMES[key]
     if (!frames || frames.length <= 1) return
 
+    const intervalMs = resolveIntervalMs()
     intervalRef.current = setInterval(() => {
       frameIndexRef.current = (frameIndexRef.current + 1) % frames.length
       drawCurrentFrame()
@@ -108,7 +128,7 @@ export const EmployeeSprite = memo(function EmployeeSprite({
         intervalRef.current = null
       }
     }
-  }, [name, department, status, appearance, drawCurrentFrame])
+  }, [name, department, status, appearance, direction, relaxed, drawCurrentFrame, resolveAnimKey, resolveIntervalMs])
 
   const dotAnimation = status === 'working'
     ? 'status-pulse 2s ease-in-out infinite'
@@ -155,7 +175,7 @@ export const EmployeeSprite = memo(function EmployeeSprite({
               borderRadius: '50%',
               background: statusHex,
               boxShadow: `0 0 4px ${statusHex}`,
-              border: '1px solid rgba(0,0,0,0.4)',
+              border: '1px solid rgba(0,0,0,0.3)',
               animation: dotAnimation,
             }}
           />

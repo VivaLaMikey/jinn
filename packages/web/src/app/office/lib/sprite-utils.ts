@@ -67,12 +67,12 @@ export function generateCharacterPalette(
   return {
     skin: SKIN_COLORS[h % SKIN_COLORS.length],
     hair: HAIR_COLORS[h % HAIR_COLORS.length],
-    shirt: DEPT_COLORS[department] || '#888888',
+    shirt: DEPT_COLORS[department] || '#C89848',
     pants: PANTS_COLORS[h % PANTS_COLORS.length],
     shoes: SHOE_COLORS[h % SHOE_COLORS.length],
-    eye: '#1a1a2a',
-    outline: '#0d0d14',
-    shadow: '#00000033',
+    eye: '#1A1010',
+    outline: '#1A0A00',
+    shadow: '#00000040',
   }
 }
 
@@ -84,340 +84,503 @@ export function paletteFromAppearance(
   return {
     skin: appearance.skinTone || SKIN_COLORS[0],
     hair: appearance.hairColor,
-    shirt: appearance.shirtColor || '#888888',
+    shirt: appearance.shirtColor || '#C89848',
     pants: appearance.pantsColor,
     shoes: appearance.shoeColor || SHOE_COLORS[0],
-    eye: '#1a1a2a',
-    outline: '#0d0d14',
-    shadow: '#00000033',
-    acc: accessoryColor || '#ffd700',
+    eye: '#1A1010',
+    outline: '#1A0A00',
+    shadow: '#00000040',
+    acc: accessoryColor || '#E8A020',
   }
 }
 
 // ---------------------------------------------------------------------------
-// 16x24 sprite frames — palette key grid
-// Row 0-1   : hair
-// Row 2-5   : head / face (eyes on row 3)
-// Row 6-9   : torso / shirt
-// Row 10-15 : arms + lower torso
-// Row 16-19 : legs / pants
-// Row 20-23 : feet / shoes
+// Isometric 20x28 sprite frames — Habbo-style 3/4 view
+//
+// The character is viewed from an isometric (above-right) angle.
+// Body is slightly turned — left side is narrower, right side slightly wider.
+//
+// Layout (rows):
+//   Row  0-2  : hair / head top
+//   Row  3-7  : head / face (eye on row 5)
+//   Row  8-14 : torso (shirt), left arm visible on left edge, right arm wider
+//   Row 15-19 : lower torso / waist
+//   Row 20-23 : legs (pants), left leg slightly behind
+//   Row 24-27 : feet (shoes)
+//
+// Columns 0-19 (20 wide). Left 4 cols = left-side of body (slightly in shadow),
+// cols 4-15 = front-facing, cols 16-19 = right side.
 // ---------------------------------------------------------------------------
 
-// Shorthand helpers so the frame data stays readable
-const _ = null   // transparent
+const _ = null    // transparent
 const O = 'outline'
 const S = 'skin'
 const H = 'hair'
-const T = 'shirt'  // torso / shirt colour (dept colour)
+const T = 'shirt'   // torso / shirt (dept colour)
 const P = 'pants'
-const F = 'shoes'  // feet
+const F = 'shoes'   // feet
 const E = 'eye'
+const D = 'shadow'  // shadow / dark side
 
-// Base idle frame 0 — arms slightly down
+// ---------------------------------------------------------------------------
+// IDLE frame 0 — standing, arms slightly forward (isometric 3/4 view)
+// ---------------------------------------------------------------------------
 const IDLE_0: SpriteFrame = [
-  // 0         1         2         3         4         5         6         7         8         9        10        11        12        13        14        15
-  [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_],  // 0
-  [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,_,O,S,S,E,S,S,E,S,S,O,_,_,_],  // 3
-  [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 10
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 11
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 12
-  [_,_,O,S,O,T,T,T,T,T,T,O,S,O,_,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,_,O,F,F,O,_,_,O,F,F,O,_,_,_],  // 20
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 21
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,_,O,O,O,_,_,_,_,O,O,O,_,_,_],  // 23
+  // 0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15   16   17   18   19
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],  // 0
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],  // 1
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],  // 2
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 3
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 4 eyes
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 5
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],  // 6
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 7 collar
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 8 shoulders
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 9
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 10
+  [_,   O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // 11 arms
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // 12
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // 13
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],  // 14
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 15
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 16 legs split
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 17
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 18
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 19
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],  // 20 feet
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],  // 21
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],  // 22
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],  // 23
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],  // 24
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],  // 25
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],  // 26
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],  // 27
 ]
 
-// Idle frame 1 — very slight breathing shift (hands up 1px)
+// IDLE frame 1 — slight breathing lift (torso rows shift up 1px, arms slightly wider)
 const IDLE_1: SpriteFrame = [
-  [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_],  // 0
-  [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,_,O,S,S,E,S,S,E,S,S,O,_,_,_],  // 3
-  [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [O,S,S,O,O,T,T,T,T,T,T,O,O,S,S,O],  // 10  arms raised 1px
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 11
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 12
-  [_,_,O,S,O,T,T,T,T,T,T,O,S,O,_,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,_,O,F,F,O,_,_,O,F,F,O,_,_,_],  // 20
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 21
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,_,O,O,O,_,_,_,_,O,O,O,_,_,_],  // 23
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],  // 0
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],  // 1
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],  // 2
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 3
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 4
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 5
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],  // 6
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 7
+  [_,   O,   D,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 8 shoulders wider
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 9
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 10
+  [O,   D,   D,   O,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],  // 11 arms raised
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // 12
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // 13
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],  // 14
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 15
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 16
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 17
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 18
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 19
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],  // 20
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],  // 21
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],  // 22
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],  // 23
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],  // 24-27
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
 ]
 
-// Working frame 0 — arms forward (typing start)
+// ---------------------------------------------------------------------------
+// WORK frames — arms extended forward (typing), alternating left/right hand
+// ---------------------------------------------------------------------------
 const WORK_0: SpriteFrame = [
-  [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_],  // 0
-  [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,_,O,S,S,E,S,S,E,S,S,O,_,_,_],  // 3
-  [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [_,_,O,S,O,T,T,T,T,T,T,O,S,O,_,_],  // 10
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 11
-  [O,S,S,_,O,T,T,T,T,T,T,O,_,S,S,O],  // 12 arms extended
-  [_,O,S,O,O,T,T,T,T,T,T,O,O,S,O,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,_,O,F,F,O,_,_,O,F,F,O,_,_,_],  // 20
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 21
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,_,O,O,O,_,_,_,_,O,O,O,_,_,_],  // 23
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],  // 0
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],  // 1
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],  // 2
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 3
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 4
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 5
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],  // 6
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 7
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 8
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 9
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 10
+  [_,   O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // 11
+  [O,   D,   S,   _,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],  // 12 arms extended forward
+  [O,   D,   S,   O,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],  // 13
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],  // 14
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 15
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 16
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 17
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 18
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 19
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],  // 20
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],  // 21
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],  // 22
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],  // 23
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
 ]
 
-// Working frame 1 — right hand down, left hand up
+// WORK_1 — right arm slightly higher (key tap)
 const WORK_1: SpriteFrame = [
-  [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_],  // 0
-  [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,_,O,S,S,E,S,S,E,S,S,O,_,_,_],  // 3
-  [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [O,S,S,O,O,T,T,T,T,T,T,O,O,S,O,_],  // 10 left arm up, right low
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 11
-  [_,_,O,S,O,T,T,T,T,T,T,O,_,S,S,O],  // 12
-  [_,_,O,S,O,T,T,T,T,T,T,O,O,S,O,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,_,O,F,F,O,_,_,O,F,F,O,_,_,_],  // 20
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 21
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,_,O,O,O,_,_,_,_,O,O,O,_,_,_],  // 23
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],  // 0
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],  // 1
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],  // 2
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 3
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 4
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // 5
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],  // 6
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 7
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 8
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 9
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],  // 10
+  [O,   D,   D,   O,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // 11 left arm up
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],  // 12 right arm forward
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],  // 13
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],  // 14
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],  // 15
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],  // 16-19
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],  // 20
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],  // 23
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
 ]
 
-// Working frame 2 — left hand down, right hand up
+// WORK_2 — left arm higher (alternating key tap)
 const WORK_2: SpriteFrame = [
-  [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_],  // 0
-  [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,_,O,S,S,E,S,S,E,S,S,O,_,_,_],  // 3
-  [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [_,O,S,O,O,T,T,T,T,T,T,O,O,S,S,O],  // 10 right arm up, left low
-  [_,O,S,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 11
-  [O,S,S,_,O,T,T,T,T,T,T,O,_,S,O,_],  // 12
-  [_,O,S,O,O,T,T,T,T,T,T,O,O,S,O,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,_,O,F,F,O,_,_,O,F,F,O,_,_,_],  // 20
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 21
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,_,O,O,O,_,_,_,_,O,O,O,_,_,_],  // 23
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],
+  [O,   D,   S,   _,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // left arm extended, right down
+  [O,   D,   S,   O,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
 ]
 
-// Meeting frame 0 — slight body turn (facing forward/right)
+// ---------------------------------------------------------------------------
+// MEETING frames — body angled, head turned slightly toward camera
+// ---------------------------------------------------------------------------
 const MEETING_0: SpriteFrame = [
-  [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_],  // 0
-  [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,_,O,S,S,S,E,S,E,S,S,O,_,_,_],  // 3 eyes shifted right
-  [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [_,_,O,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 10
-  [_,_,O,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 11
-  [_,_,O,S,O,T,T,T,T,T,T,O,S,S,O,_],  // 12
-  [_,_,_,O,O,T,T,T,T,T,T,O,S,O,_,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,_,O,F,F,O,_,_,O,F,F,O,_,_,_],  // 20
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 21
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,_,O,O,O,_,_,_,_,O,O,O,_,_,_],  // 23
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   E,   S,   E,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // eyes shifted — looking right
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
 ]
 
-// Meeting frame 1 — slight lean
+// MEETING_1 — slight body lean (head shifted 1px right)
 const MEETING_1: SpriteFrame = [
-  [_,_,_,_,O,O,O,O,O,O,O,_,_,_,_,_],  // 0 shifted 1px left
-  [_,_,_,O,H,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,O,H,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,O,S,S,E,S,S,E,S,S,S,O,_,_,_],  // 3
-  [_,_,O,S,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,O,S,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,O,T,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,O,T,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,O,T,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,O,T,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [_,O,S,O,O,T,T,T,T,T,T,O,S,S,O,_],  // 10
-  [_,O,S,O,O,T,T,T,T,T,T,O,S,S,O,_],  // 11
-  [_,O,S,O,O,T,T,T,T,T,T,O,S,S,O,_],  // 12
-  [_,_,O,O,O,T,T,T,T,T,T,O,S,O,_,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,O,P,P,O,_,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,O,P,P,O,_,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,O,P,P,O,_,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,O,P,P,O,_,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,O,F,F,O,_,_,_,O,F,F,O,_,_,_],  // 20
-  [_,O,F,F,F,O,_,_,_,O,F,F,F,O,_,_],  // 21
-  [_,O,F,F,F,O,_,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,O,O,O,_,_,_,_,_,O,O,O,_,_,_],  // 23
+  [_,   _,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _],  // shifted right
+  [_,   _,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   E,   S,   E,   S,   S,   S,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _],
+  [_,   O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _],
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _],
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _],
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
 ]
 
-// Error frame 0 — arms raised up in alarm
+// ---------------------------------------------------------------------------
+// ERROR frames — arms raised in alarm
+// ---------------------------------------------------------------------------
 const ERROR_0: SpriteFrame = [
-  [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_],  // 0
-  [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_],  // 1
-  [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_],  // 2
-  [_,_,_,O,S,S,E,S,S,E,S,S,O,_,_,_],  // 3
-  [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_],  // 4
-  [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_],  // 5
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 6
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 7
-  [_,_,O,T,T,T,T,T,T,T,T,T,T,O,_,_],  // 8
-  [_,_,_,O,T,T,T,T,T,T,T,T,O,_,_,_],  // 9
-  [_,O,S,O,O,T,T,T,T,T,T,O,O,S,O,_],  // 10 arms angled up
-  [O,S,S,O,O,T,T,T,T,T,T,O,O,S,S,O],  // 11
-  [O,S,_,O,O,T,T,T,T,T,T,O,O,_,S,O],  // 12
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 13
-  [_,_,_,O,O,T,T,T,T,T,T,O,O,_,_,_],  // 14
-  [_,_,_,_,O,T,T,T,T,T,T,O,_,_,_,_],  // 15
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 16
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 17
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 18
-  [_,_,_,O,P,P,O,_,_,O,P,P,O,_,_,_],  // 19
-  [_,_,_,O,F,F,O,_,_,O,F,F,O,_,_,_],  // 20
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 21
-  [_,_,O,F,F,F,O,_,_,O,F,F,F,O,_,_],  // 22
-  [_,_,_,O,O,O,_,_,_,_,O,O,O,_,_,_],  // 23
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   O,   D,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _],  // both arms up
+  [O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _],
+  [O,   D,   S,   O,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],
+  [_,   O,   D,   O,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
 ]
 
-// Error frame 1 — arms at sides (quick flash alternation)
-const ERROR_1: SpriteFrame = IDLE_0
+// ERROR_1 — arms down (flash alternation with idle)
+const ERROR_1 = IDLE_0
+
+// ---------------------------------------------------------------------------
+// RELAXED frame — casual slouch, one arm resting (for break room)
+// ---------------------------------------------------------------------------
+const RELAXED_0: SpriteFrame = [
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],  // relaxed gaze, eyes more open
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],
+  [_,   _,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // right arm resting on hip
+  [_,   _,   _,   O,   D,   S,   O,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   O,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+]
+
+const RELAXED_1 = IDLE_1
+
+// ---------------------------------------------------------------------------
+// WALK frames — SE direction (moving down-right on isometric grid)
+// The body is the same isometric stance but with one leg forward.
+// ---------------------------------------------------------------------------
+const WALK_SE_0: SpriteFrame = [
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [O,   D,   D,   O,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],  // arm swing
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   P,   O,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _,   _],  // legs walking (right leg forward)
+  [_,   _,   _,   _,   O,   D,   P,   O,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   O,   O,   O,   _,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+]
+
+// WALK_SE_1 — opposite leg forward
+const WALK_SE_1: SpriteFrame = [
+  [_,   _,   _,   _,   _,   O,   O,   O,   O,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   H,   H,   H,   H,   H,   H,   H,   H,   H,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   E,   S,   S,   S,   E,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   O,   D,   S,   S,   S,   S,   S,   S,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _],
+  [_,   O,   D,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   S,   O,   _,   _,   _],
+  [_,   O,   D,   S,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   S,   O,   _,   _,   _,   _],
+  [_,   _,   O,   D,   O,   T,   T,   T,   T,   T,   T,   T,   T,   O,   O,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   T,   T,   T,   T,   T,   T,   T,   T,   O,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   O,   _,   _,   _,   _,   _,   _,   _],  // left leg forward
+  [_,   _,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   P,   P,   O,   _,   _,   O,   P,   P,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   O,   D,   F,   F,   O,   _,   _,   O,   F,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   O,   D,   F,   F,   F,   O,   _,   _,   O,   F,   F,   O,   _,   _,   _,   _,   _,   _],
+  [_,   O,   F,   F,   F,   O,   _,   _,   O,   F,   F,   F,   O,   _,   _,   _,   _,   _,   _,   _],
+  [_,   O,   O,   O,   O,   _,   _,   _,   _,   O,   O,   O,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+  [_,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _,   _],
+]
+
+// WALK_SW — mirror of SE (moving down-left): reuse SE frames, renderer mirrors them
+const WALK_SW_0 = WALK_SE_0
+const WALK_SW_1 = WALK_SE_1
+
+// WALK_NE — moving up-right: same isometric body, lighter shadow (moving toward camera)
+const WALK_NE_0 = WALK_SE_1
+const WALK_NE_1 = WALK_SE_0
+
+// WALK_NW — moving up-left
+const WALK_NW_0 = WALK_SE_0
+const WALK_NW_1 = WALK_SE_1
 
 export const SPRITE_FRAMES: Record<string, SpriteFrame[]> = {
-  idle: [IDLE_0, IDLE_1],
-  work: [WORK_0, WORK_1, WORK_2],
-  meeting: [MEETING_0, MEETING_1],
-  error: [ERROR_0, ERROR_1],
+  idle:     [IDLE_0, IDLE_1],
+  work:     [WORK_0, WORK_1, WORK_2],
+  meeting:  [MEETING_0, MEETING_1],
+  error:    [ERROR_0, ERROR_1],
+  relaxed:  [RELAXED_0, RELAXED_1],
+  walk_se:  [WALK_SE_0, WALK_SE_1],
+  walk_sw:  [WALK_SW_0, WALK_SW_1],
+  walk_ne:  [WALK_NE_0, WALK_NE_1],
+  walk_nw:  [WALK_NW_0, WALK_NW_1],
 }
 
 // ---------------------------------------------------------------------------
-// Hair style modifiers — transform rows 0-2 (and optionally nearby rows)
-// of a base frame to reflect different hair styles.
+// Hair style modifiers — applied to the isometric base frame.
+// Row indices match the new 20x28 layout.
 // ---------------------------------------------------------------------------
 
 export const HAIR_STYLES: Record<string, (frame: SpriteFrame) => SpriteFrame> = {
-  short: (frame) => frame, // default — no change
+  short: (frame) => frame,  // default — no change
   bald: (frame) => {
     const f = frame.map((r) => [...r])
-    // Replace hair with skin on rows 0-2
-    f[0] = [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_]
-    f[1] = [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_]
-    f[2] = [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_]
+    f[0] = [_,_,_,_,_,O,O,O,O,O,O,O,_,_,_,_,_,_,_,_]
+    f[1] = [_,_,_,_,O,S,S,S,S,S,S,S,O,_,_,_,_,_,_,_]
+    f[2] = [_,_,_,O,S,S,S,S,S,S,S,S,S,O,_,_,_,_,_,_]
     return f
   },
   long: (frame) => {
     const f = frame.map((r) => [...r])
-    // Hair extends down the sides of the face
-    f[3] = [_,_,_,O,H,S,E,S,S,E,S,H,O,_,_,_]
-    f[4] = [_,_,_,O,H,S,S,S,S,S,S,H,O,_,_,_]
-    f[5] = [_,_,_,_,O,H,S,S,S,S,H,O,_,_,_,_]
+    // Hair falls to shoulders — side shadow (D) stays
+    f[3] = [_,_,_,O,H,S,S,S,S,S,S,S,S,O,_,_,_,_,_,_]
+    f[4] = [_,_,_,O,H,S,E,S,S,S,E,S,H,O,_,_,_,_,_,_]
+    f[5] = [_,_,_,O,H,S,S,S,S,S,S,S,H,O,_,_,_,_,_,_]
+    f[6] = [_,_,_,_,O,H,S,S,S,S,S,H,O,_,_,_,_,_,_,_]
     return f
   },
   mohawk: (frame) => {
     const f = frame.map((r) => [...r])
-    // Tall centre strip
-    f[0] = [_,_,_,_,_,_,_,O,H,O,_,_,_,_,_,_]
-    f[1] = [_,_,_,_,_,O,O,H,H,O,O,_,_,_,_,_]
+    f[0] = [_,_,_,_,_,_,_,O,H,O,_,_,_,_,_,_,_,_,_,_]
+    f[1] = [_,_,_,_,_,O,O,H,H,H,O,O,_,_,_,_,_,_,_,_]
     return f
   },
   ponytail: (frame) => {
     const f = frame.map((r) => [...r])
-    // Hair extends to one side at the back
-    f[1] = [_,_,_,_,O,H,H,H,H,H,H,O,O,_,_,_]
-    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,O,H,_,_]
-    f[3] = [_,_,_,O,S,S,E,S,S,E,S,S,O,H,O,_]
-    f[4] = [_,_,_,O,S,S,S,S,S,S,S,S,O,H,O,_]
+    f[1] = [_,_,_,_,O,H,H,H,H,H,H,H,O,O,_,_,_,_,_,_]
+    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,H,O,H,O,_,_,_,_]
+    f[3] = [_,_,_,O,D,S,S,S,S,S,S,S,S,O,H,O,_,_,_,_]
+    f[4] = [_,_,_,O,D,S,E,S,S,S,E,S,S,O,H,O,_,_,_,_]
     return f
   },
   curly: (frame) => {
     const f = frame.map((r) => [...r])
-    // Wider, rounder hair
-    f[0] = [_,_,_,_,O,H,O,H,O,H,O,H,_,_,_,_]
-    f[1] = [_,_,_,O,H,O,H,H,H,H,O,H,O,_,_,_]
-    f[2] = [_,_,O,H,H,H,H,H,H,H,H,H,H,O,_,_]
+    f[0] = [_,_,_,_,O,H,O,H,O,H,O,H,O,_,_,_,_,_,_,_]
+    f[1] = [_,_,_,O,H,O,H,H,H,H,O,H,O,H,_,_,_,_,_,_]
+    f[2] = [_,_,O,H,H,H,H,H,H,H,H,H,H,H,O,_,_,_,_,_]
     return f
   },
   spiky: (frame) => {
     const f = frame.map((r) => [...r])
-    // Spiky tips above the head
-    f[0] = [_,_,_,_,O,H,_,O,H,_,O,H,_,_,_,_]
-    f[1] = [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_]
-    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_]
+    f[0] = [_,_,_,_,O,H,_,O,H,_,O,H,_,_,_,_,_,_,_,_]
+    f[1] = [_,_,_,_,O,H,H,H,H,H,H,H,O,_,_,_,_,_,_,_]
+    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,H,O,_,_,_,_,_,_]
     return f
   },
   bob: (frame) => {
     const f = frame.map((r) => [...r])
-    // Blunt straight cut that frames the face
-    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_]
-    f[3] = [_,_,_,O,H,S,E,S,S,E,S,H,O,_,_,_]
-    f[4] = [_,_,_,O,H,S,S,S,S,S,S,H,O,_,_,_]
-    f[5] = [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_]
+    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,H,O,_,_,_,_,_,_]
+    f[3] = [_,_,_,O,H,S,S,S,S,S,S,S,H,O,_,_,_,_,_,_]
+    f[4] = [_,_,_,O,H,S,E,S,S,S,E,S,H,O,_,_,_,_,_,_]
+    f[5] = [_,_,_,O,H,S,S,S,S,S,S,S,H,O,_,_,_,_,_,_]
+    f[6] = [_,_,_,_,O,H,H,H,H,H,H,H,O,_,_,_,_,_,_,_]
     return f
   },
 }
 
 // ---------------------------------------------------------------------------
-// Accessory overlays — a sparse SpriteFrame placed on top of the base sprite.
-// Null cells are transparent (skipped when drawing).
+// Accessory overlays — sparse SpriteFrame placed on top of the base sprite.
 // 'acc' key resolves to the palette's acc colour.
 // ---------------------------------------------------------------------------
 
@@ -426,58 +589,53 @@ const ACC = 'acc'
 export const ACCESSORY_OVERLAYS: Record<string, SpriteFrame> = {
   none: [],
   glasses: (() => {
-    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
-    // Glasses frames at eye level (row 3)
-    frame[3] = [_,_,_,_,_,O,O,O,_,O,O,O,_,_,_,_]
+    const frame: SpriteFrame = Array(28).fill(null).map(() => Array(20).fill(null))
+    // Glasses frames at eye level (row 4)
+    frame[4] = [_,_,_,_,_,O,O,O,_,_,O,O,O,_,_,_,_,_,_,_]
     return frame
   })(),
   headphones: (() => {
-    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
-    // Headband on row 0, ear cups on rows 2-3
-    frame[0] = [_,_,_,_,O,ACC,O,O,O,O,ACC,O,_,_,_,_]
-    frame[2] = [_,_,O,ACC,_,_,_,_,_,_,_,_,ACC,O,_,_]
-    frame[3] = [_,_,O,ACC,_,_,_,_,_,_,_,_,ACC,O,_,_]
+    const frame: SpriteFrame = Array(28).fill(null).map(() => Array(20).fill(null))
+    frame[0] = [_,_,_,_,O,ACC,O,O,O,O,O,ACC,O,_,_,_,_,_,_,_]
+    frame[3] = [_,_,O,ACC,_,_,_,_,_,_,_,_,_,ACC,O,_,_,_,_,_]
+    frame[4] = [_,_,O,ACC,_,_,_,_,_,_,_,_,_,ACC,O,_,_,_,_,_]
     return frame
   })(),
   hat: (() => {
-    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
-    // Hat brim on row 1, crown on row 0
-    frame[0] = [_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_]
-    frame[1] = [_,_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_]
+    const frame: SpriteFrame = Array(28).fill(null).map(() => Array(20).fill(null))
+    frame[0] = [_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_,_,_]
+    frame[1] = [_,_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_,_,_,_]
     return frame
   })(),
   badge: (() => {
-    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
-    // Small badge on chest (rows 7-8, left side)
-    frame[7] = [_,_,_,_,_,ACC,ACC,_,_,_,_,_,_,_,_,_]
-    frame[8] = [_,_,_,_,_,ACC,ACC,_,_,_,_,_,_,_,_,_]
+    const frame: SpriteFrame = Array(28).fill(null).map(() => Array(20).fill(null))
+    frame[8]  = [_,_,_,_,_,_,ACC,ACC,_,_,_,_,_,_,_,_,_,_,_,_]
+    frame[9]  = [_,_,_,_,_,_,ACC,ACC,_,_,_,_,_,_,_,_,_,_,_,_]
     return frame
   })(),
   bowtie: (() => {
-    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
-    // Small bowtie just below chin (row 5-6 centre)
-    frame[5] = [_,_,_,_,_,O,ACC,O,O,ACC,O,_,_,_,_,_]
-    frame[6] = [_,_,_,_,_,_,O,ACC,ACC,O,_,_,_,_,_,_]
+    const frame: SpriteFrame = Array(28).fill(null).map(() => Array(20).fill(null))
+    frame[6] = [_,_,_,_,_,O,ACC,O,O,ACC,O,_,_,_,_,_,_,_,_,_]
+    frame[7] = [_,_,_,_,_,_,O,ACC,ACC,O,_,_,_,_,_,_,_,_,_,_]
     return frame
   })(),
   scarf: (() => {
-    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
-    // Scarf wrap around neck rows 5-6
-    frame[5] = [_,_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_]
-    frame[6] = [_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_]
+    const frame: SpriteFrame = Array(28).fill(null).map(() => Array(20).fill(null))
+    frame[6] = [_,_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_,_,_,_]
+    frame[7] = [_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_,_,_]
     return frame
   })(),
 }
 
 // Accessory colour map — override the 'acc' palette entry per accessory type
 const ACCESSORY_COLORS: Record<string, string | null> = {
-  none: null,
-  glasses: '#333340',
-  headphones: '#444455',
-  hat: null,   // uses shirt colour — caller must substitute
-  badge: '#ffd700',
-  bowtie: '#cc2244',
-  scarf: '#4466aa',
+  none:       null,
+  glasses:    '#3A3030',
+  headphones: '#484455',
+  hat:        null,      // uses shirt colour
+  badge:      '#E8A020',
+  bowtie:     '#CC2244',
+  scarf:      '#4466AA',
 }
 
 /** Resolve the 'acc' colour for a given accessory.
@@ -487,7 +645,7 @@ export function resolveAccessoryColor(
   shirtColor?: string,
 ): string {
   if (accessory === 'hat' && shirtColor) return shirtColor
-  return ACCESSORY_COLORS[accessory] ?? '#ffd700'
+  return ACCESSORY_COLORS[accessory] ?? '#E8A020'
 }
 
 // ---------------------------------------------------------------------------

@@ -7,29 +7,66 @@ interface TitleBarProps {
   connected: boolean
 }
 
-// Pixel-art genie lamp icon: ~20x16px using nested divs
-function LampIcon() {
+// Isometric mini-building icon for the title bar
+function IsoBuildingIcon() {
   return (
-    <div style={{ position: 'relative', width: '20px', height: '16px', flexShrink: 0 }}>
-      {/* Base of lamp */}
-      <div style={{ position: 'absolute', bottom: 0, left: '3px', width: '14px', height: '5px', background: '#ff8c00' }} />
-      {/* Body */}
-      <div style={{ position: 'absolute', bottom: '4px', left: '5px', width: '10px', height: '6px', background: '#ffaa33' }} />
-      {/* Spout */}
-      <div style={{ position: 'absolute', bottom: '5px', right: '1px', width: '5px', height: '3px', background: '#ff8c00' }} />
-      {/* Handle */}
-      <div style={{ position: 'absolute', bottom: '4px', left: '1px', width: '3px', height: '5px', background: '#cc6600' }} />
-      {/* Flame dot */}
-      <div style={{ position: 'absolute', top: '1px', left: '8px', width: '4px', height: '4px', background: '#ffd700' }} />
-      <div style={{ position: 'absolute', top: 0, left: '9px', width: '2px', height: '2px', background: '#fff4aa' }} />
+    <div style={{ position: 'relative', width: '20px', height: '18px', flexShrink: 0 }}>
+      {/* Left wall of isometric building */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          width: '10px',
+          height: '12px',
+          background: '#C8943A',
+          clipPath: 'polygon(0% 25%, 50% 0%, 50% 75%, 0% 100%)',
+        }}
+      />
+      {/* Right wall */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: '9px',
+          width: '11px',
+          height: '12px',
+          background: '#A0521A',
+          clipPath: 'polygon(0% 0%, 100% 25%, 100% 100%, 0% 75%)',
+        }}
+      />
+      {/* Roof top */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '2px',
+          left: 0,
+          width: '20px',
+          height: '8px',
+          background: '#E07828',
+          clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)',
+        }}
+      />
+      {/* Tiny window on left wall */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: '4px',
+          left: '2px',
+          width: '3px',
+          height: '3px',
+          background: '#FFD700',
+          opacity: 0.8,
+        }}
+      />
     </div>
   )
 }
 
 const PULSE_KEYFRAMES = `
-@keyframes live-pulse {
+@keyframes title-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.45; }
 }
 `
 
@@ -44,7 +81,6 @@ export const TitleBar = memo(function TitleBar({ connected }: TitleBarProps) {
       setTime(`${h}:${m}`)
     }
     tick()
-    // Update every minute — seconds not needed
     const id = setInterval(tick, 60_000)
     return () => clearInterval(id)
   }, [])
@@ -59,70 +95,68 @@ export const TitleBar = memo(function TitleBar({ connected }: TitleBarProps) {
           justifyContent: 'space-between',
           padding: '0 12px',
           height: '34px',
-          borderBottom: '1px solid var(--separator, #1a1a1a)',
-          background: 'var(--bg-secondary, rgba(18,18,18,0.98))',
+          borderBottom: '2px solid #C8943A',
+          background: 'linear-gradient(180deg, #4A3020 0%, #3A2418 100%)',
           flexShrink: 0,
         }}
       >
-        {/* Left: logo + title */}
+        {/* Left: isometric building icon + title */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <LampIcon />
+          <IsoBuildingIcon />
           <span
             style={{
               fontFamily: 'monospace',
               fontSize: '11px',
               fontWeight: 700,
-              color: 'var(--accent, #ff8c00)',
-              letterSpacing: '0.15em',
+              color: '#E8A020',
+              letterSpacing: '0.18em',
               textTransform: 'uppercase',
-              textShadow: '0 0 8px var(--accent, #ff8c00)',
+              textShadow: '0 1px 0 rgba(0,0,0,0.6), 0 0 10px #E8A02060',
             }}
           >
             JINN HQ
           </span>
         </div>
 
-        {/* Center: decorative pixel dots */}
-        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-          {['#ff5f57', '#febc2e', '#28c840'].map((c, i) => (
+        {/* Centre: warm decorative tiles */}
+        <div style={{ display: 'flex', gap: '3px', alignItems: 'center' }}>
+          {['#E07828', '#E8A020', '#5BBF6A'].map((c, i) => (
             <div
               key={i}
               style={{
                 width: '6px',
                 height: '6px',
                 background: c,
-                opacity: 0.6,
+                opacity: 0.7,
+                transform: 'rotate(45deg)',
               }}
             />
           ))}
         </div>
 
-        {/* Right: connection status + time indicator + clock */}
+        {/* Right: time indicator + connection status + clock */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <TimeIndicator />
+
           {/* Connection indicator */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             <div
               style={{
-                width: '6px',
-                height: '6px',
-                background: connected
-                  ? 'var(--system-green, #48bb78)'
-                  : 'var(--system-red, #fc5c65)',
-                boxShadow: connected
-                  ? '0 0 4px var(--system-green, #48bb78)'
-                  : 'none',
-                animation: connected ? 'live-pulse 2s ease-in-out infinite' : 'none',
+                width: '7px',
+                height: '7px',
+                background: connected ? '#5BBF6A' : '#D94A3A',
+                boxShadow: connected ? '0 0 5px #5BBF6A' : 'none',
+                animation: connected ? 'title-pulse 2s ease-in-out infinite' : 'none',
+                transform: 'rotate(45deg)',
               }}
             />
             <span
               style={{
                 fontFamily: 'monospace',
                 fontSize: '9px',
-                letterSpacing: '0.05em',
-                color: connected
-                  ? 'var(--system-green, #48bb78)'
-                  : 'var(--system-red, #fc5c65)',
+                letterSpacing: '0.06em',
+                color: connected ? '#5BBF6A' : '#D94A3A',
+                fontWeight: 700,
               }}
             >
               {connected ? 'LIVE' : 'OFFLINE'}
@@ -134,8 +168,8 @@ export const TitleBar = memo(function TitleBar({ connected }: TitleBarProps) {
             style={{
               fontFamily: 'monospace',
               fontSize: '10px',
-              color: 'var(--text-secondary, #888)',
-              letterSpacing: '0.1em',
+              color: '#C8B898',
+              letterSpacing: '0.12em',
             }}
           >
             {time}

@@ -1,78 +1,119 @@
 'use client'
 
-import React, { memo } from 'react'
+import React, { memo, useEffect, useState } from 'react'
 
 interface SpeechBubbleProps {
   text: string
+  employeeName?: string
+  deptColor?: string
 }
 
-// Animation: appear, hold, fade out. Total duration 7s.
+// Habbo-style chat bubble: white rounded rect, name bold on left, text on right, pixel tail
 const BUBBLE_KEYFRAMES = `
-@keyframes bubble-appear {
-  0%   { opacity: 0; transform: translateX(-50%) translateY(4px) scale(0.9); }
-  12%  { opacity: 1; transform: translateX(-50%) translateY(0px) scale(1); }
-  75%  { opacity: 1; transform: translateX(-50%) translateY(0px) scale(1); }
-  100% { opacity: 0; transform: translateX(-50%) translateY(-3px) scale(0.95); }
+@keyframes habbo-bubble-appear {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.88); }
+  10%  { opacity: 1; transform: translateX(-50%) translateY(0px) scale(1); }
+  78%  { opacity: 1; transform: translateX(-50%) translateY(0px) scale(1); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-4px) scale(0.95); }
 }
 `
 
-// Pixel-art border via multi-layer box-shadow (2px stepped border)
-const PIXEL_BORDER = `
-  -2px 0 0 0 #3a3a2e,
-   2px 0 0 0 #3a3a2e,
-   0 -2px 0 0 #3a3a2e,
-   0  2px 0 0 #3a3a2e,
-  -2px -2px 0 0 #3a3a2e,
-   2px -2px 0 0 #3a3a2e,
-  -2px  2px 0 0 #3a3a2e,
-   2px  2px 0 0 #3a3a2e,
-   0 4px 8px rgba(0,0,0,0.6)
-`
+export const SpeechBubble = memo(function SpeechBubble({
+  text,
+  employeeName,
+  deptColor = '#ff8c00',
+}: SpeechBubbleProps) {
+  // Key trick: re-mount when text changes so the animation restarts
+  const [key, setKey] = useState(0)
+  useEffect(() => {
+    setKey((k) => k + 1)
+  }, [text])
 
-export const SpeechBubble = memo(function SpeechBubble({ text }: SpeechBubbleProps) {
+  // Truncate display text to keep bubbles tidy
+  const displayText = text.length > 52 ? text.slice(0, 49) + '...' : text
+
   return (
     <>
       <style>{BUBBLE_KEYFRAMES}</style>
       <div
+        key={key}
         style={{
           position: 'absolute',
-          bottom: 'calc(100% + 10px)',
+          bottom: 'calc(100% + 8px)',
           left: '50%',
-          // transform handled by animation
-          background: '#f5f0e4',
-          boxShadow: PIXEL_BORDER,
-          padding: '4px 7px',
+          // width controlled by content up to 160px
+          maxWidth: '160px',
+          minWidth: '60px',
+          background: '#FFFEF5',
+          border: '2px solid #C8B898',
+          borderRadius: '6px',
+          padding: '4px 8px',
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: '5px',
+          boxShadow: '0 2px 0 0 #C8B898, 2px 0 0 0 #C8B898, -2px 0 0 0 #C8B898, 0 3px 6px rgba(0,0,0,0.25)',
           whiteSpace: 'nowrap',
-          maxWidth: '140px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
           fontFamily: 'monospace',
           fontSize: '9px',
-          color: '#1a1a1a',
           pointerEvents: 'none',
-          zIndex: 10,
-          // 7s total: 0.84s in, ~4.5s hold, 1.75s out
-          animation: 'bubble-appear 7s ease-in-out forwards',
+          zIndex: 20,
+          animation: 'habbo-bubble-appear 7s ease-in-out forwards',
           willChange: 'transform, opacity',
         }}
         title={text}
       >
-        {text}
+        {/* Bold employee name in dept colour */}
+        {employeeName && (
+          <span
+            style={{
+              fontWeight: 700,
+              color: deptColor,
+              flexShrink: 0,
+              fontSize: '9px',
+              letterSpacing: '0.02em',
+            }}
+          >
+            {employeeName}:
+          </span>
+        )}
+        {/* Message text */}
+        <span
+          style={{
+            color: '#2A2010',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            flexShrink: 1,
+            minWidth: 0,
+          }}
+        >
+          {displayText}
+        </span>
 
-        {/* Pixelated tail — stepped divs instead of smooth triangle */}
-        {/* Step 1: widest (bottom) */}
+        {/* Pixel tail — three stepped divs pointing down */}
+        {/* Outer border step */}
         <div
           style={{
             position: 'absolute',
-            bottom: '-7px',
+            bottom: '-8px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: '8px',
+            height: '2px',
+            background: '#C8B898',
+          }}
+        />
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '-6px',
             left: '50%',
             transform: 'translateX(-50%)',
             width: '6px',
             height: '2px',
-            background: '#3a3a2e',
+            background: '#C8B898',
           }}
         />
-        {/* Step 2: middle */}
+        {/* Inner fill matching bubble bg */}
         <div
           style={{
             position: 'absolute',
@@ -81,31 +122,18 @@ export const SpeechBubble = memo(function SpeechBubble({ text }: SpeechBubblePro
             transform: 'translateX(-50%)',
             width: '4px',
             height: '2px',
-            background: '#3a3a2e',
+            background: '#FFFEF5',
           }}
         />
-        {/* Step 3: inner fill (bubble colour) */}
         <div
           style={{
             position: 'absolute',
-            bottom: '-5px',
+            bottom: '-8px',
             left: '50%',
-            transform: 'translateX(-50%)',
+            transform: 'translateX(-2px)',
             width: '4px',
-            height: '1px',
-            background: '#f5f0e4',
-          }}
-        />
-        {/* Step 4: tip */}
-        <div
-          style={{
-            position: 'absolute',
-            bottom: '-7px',
-            left: '50%',
-            transform: 'translateX(-4px)',
-            width: '2px',
             height: '2px',
-            background: '#3a3a2e',
+            background: '#C8B898',
           }}
         />
       </div>
