@@ -64,6 +64,7 @@ import {
   getRestartTrackerState,
 } from "./restart-tracker.js";
 import { spawnRestartWatcher } from "./restart-watcher-spawner.js";
+import { loadOfficeState, saveOfficeState, STORE_CATALOG, purchaseItem, placeDecoration, removeDecoration, creditCoins, getWallet, getInventory } from "./office.js";
 
 export interface ApiContext {
   config: JinnConfig;
@@ -2060,6 +2061,84 @@ export async function handleApiRequest(
     if (method === "GET" && pathname === "/api/budgets/events") {
       const { getBudgetEvents } = await import("./budgets.js");
       return json(res, getBudgetEvents());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Office game routes
+    // ---------------------------------------------------------------------------
+
+    // GET /api/office/state
+    if (method === "GET" && pathname === "/api/office/state") {
+      const state = loadOfficeState();
+      return json(res, {
+        wallets: state.wallets,
+        decorations: state.decorations,
+        inventory: state.inventory,
+      });
+    }
+
+    // GET /api/office/store
+    if (method === "GET" && pathname === "/api/office/store") {
+      return json(res, STORE_CATALOG);
+    }
+
+    // GET /api/office/wallets
+    if (method === "GET" && pathname === "/api/office/wallets") {
+      const state = loadOfficeState();
+      return json(res, state.wallets);
+    }
+
+    // GET /api/office/wallets/:name
+    params = matchRoute("/api/office/wallets/:name", pathname);
+    if (method === "GET" && params) {
+      const state = loadOfficeState();
+      return json(res, getWallet(state, params.name));
+    }
+
+    // POST /api/office/store/purchase
+    if (method === "POST" && pathname === "/api/office/store/purchase") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as { employee: string; itemId: string };
+      const state = loadOfficeState();
+      const result = purchaseItem(state, body.employee, body.itemId);
+      return json(res, result, result.success ? 200 : 400);
+    }
+
+    // PUT /api/office/decorations
+    if (method === "PUT" && pathname === "/api/office/decorations") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as { itemId: string; room: string; owner: string; x: number; y: number };
+      const state = loadOfficeState();
+      const result = placeDecoration(state, body.itemId, body.room, body.owner, body.x, body.y);
+      return json(res, result, result.success ? 200 : 400);
+    }
+
+    // DELETE /api/office/decorations/:id
+    params = matchRoute("/api/office/decorations/:id", pathname);
+    if (method === "DELETE" && params) {
+      const state = loadOfficeState();
+      const result = removeDecoration(state, params.id, "coo");
+      return json(res, result, result.success ? 200 : 400);
+    }
+
+    // POST /api/office/credit
+    if (method === "POST" && pathname === "/api/office/credit") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as { employee: string; amount: number };
+      const state = loadOfficeState();
+      creditCoins(state, body.employee, body.amount);
+      saveOfficeState(state);
+      return json(res, { success: true, wallet: getWallet(state, body.employee) });
+    }
+
+    // GET /api/office/inventory/:name
+    params = matchRoute("/api/office/inventory/:name", pathname);
+    if (method === "GET" && params) {
+      const state = loadOfficeState();
+      return json(res, getInventory(state, params.name));
     }
 
     return notFound(res);

@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useCallback, useEffect, useReducer } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useOfficeState } from './hooks/use-office-state'
 import { TitleBar } from './components/title-bar'
 import { OfficeFloor } from './components/office-floor'
@@ -8,6 +9,9 @@ import { StatusBar } from './components/status-bar'
 import { EmployeePanel } from './components/employee-panel'
 import { TaskAssigner } from './components/task-assigner'
 import { MeetingCreator } from './components/meeting-creator'
+import { StorePanel } from './components/store-panel'
+import { DecorationMode } from './components/decoration-mode'
+import { api } from '@/lib/api'
 
 // Managers whose delegation triggers the COO walk animation
 const MANAGER_NAMES = new Set([
@@ -23,6 +27,47 @@ export default function OfficeView() {
   const [showMeetingCreator, setShowMeetingCreator] = useState(false)
   const [taskAssignerTarget, setTaskAssignerTarget] = useState<string | null>(null)
   const [cooWalkTarget, setCooWalkTarget] = useState<string | null>(null)
+  const [showStore, setShowStore] = useState(false)
+  const [decorationMode, setDecorationMode] = useState(false)
+
+  const queryClient = useQueryClient()
+
+  const { data: officeState } = useQuery({
+    queryKey: ['office-state'],
+    queryFn: () => api.getOfficeState(),
+    staleTime: 15_000,
+  })
+
+  const { data: storeCatalog = [] } = useQuery({
+    queryKey: ['store-catalog'],
+    queryFn: () => api.getStoreCatalog(),
+    staleTime: 60_000,
+  })
+
+  const [pendingDecorationItemId, setPendingDecorationItemId] = useState<string | null>(null)
+
+  const placeDecorationMutation = useMutation({
+    mutationFn: ({ itemId, room, owner, x, y }: { itemId: string; room: string; owner: string; x: number; y: number }) =>
+      api.placeDecoration(itemId, room, owner, x, y),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['office-state'] })
+      queryClient.invalidateQueries({ queryKey: ['inventory', selectedEmployee ?? ''] })
+    },
+  })
+
+  const handleRoomClick = useCallback(
+    (room: string, x: number, y: number) => {
+      if (!decorationMode || !pendingDecorationItemId) return
+      placeDecorationMutation.mutate({
+        itemId: pendingDecorationItemId,
+        room,
+        owner: selectedEmployee ?? 'jinn',
+        x,
+        y,
+      })
+    },
+    [decorationMode, pendingDecorationItemId, selectedEmployee, placeDecorationMutation],
+  )
 
   const handleSelectEmployee = useCallback((name: string) => {
     setSelectedEmployee(name)
@@ -95,14 +140,36 @@ export default function OfficeView() {
           onSelectEmployee={handleSelectEmployee}
           cooTargetEmployee={cooWalkTarget}
           departments={departments}
+          decorations={officeState?.decorations}
+          storeItems={storeCatalog}
+          decorationMode={decorationMode}
+          onRoomClick={handleRoomClick}
         />
 
         {/* Employee detail panel */}
-        {selectedEmployee && (
+        {selectedEmployee && !showStore && (
           <EmployeePanel
             employee={selectedEmployeeData}
             onClose={handleClosePanel}
             onAssignTask={handleAssignTask}
+          />
+        )}
+
+        {/* Store panel */}
+        {showStore && (
+          <StorePanel
+            buyerName={selectedEmployee ?? 'jinn'}
+            onClose={() => setShowStore(false)}
+          />
+        )}
+
+        {/* Decoration mode overlay */}
+        {decorationMode && (
+          <DecorationMode
+            ownerName={selectedEmployee ?? 'jinn'}
+            onExit={() => { setDecorationMode(false); setPendingDecorationItemId(null) }}
+            onSelectItem={setPendingDecorationItemId}
+            selectedItemId={pendingDecorationItemId}
           />
         )}
       </div>
@@ -110,6 +177,9 @@ export default function OfficeView() {
       <StatusBar
         employees={employees}
         onCallMeeting={() => setShowMeetingCreator(true)}
+        onOpenStore={() => setShowStore((v) => !v)}
+        onToggleDecorationMode={() => setDecorationMode((v) => !v)}
+        decorationMode={decorationMode}
       />
 
       {/* Task assigner modal */}

@@ -46,6 +46,42 @@ export interface OrgData {
   employees: string[];
 }
 
+export interface StoreItem {
+  id: string
+  name: string
+  description: string
+  cost: number
+  category: 'desk' | 'room' | 'wall'
+  sprite: string
+}
+
+export interface Decoration {
+  id: string
+  itemId: string
+  room: string
+  owner: string
+  x: number
+  y: number
+  placedAt: string
+}
+
+export interface Wallet {
+  balance: number
+  totalEarned: number
+  lastUpdated: string
+}
+
+export interface InventoryItem {
+  itemId: string
+  quantity: number
+}
+
+export interface OfficeGameState {
+  wallets: Record<string, Wallet>
+  decorations: Decoration[]
+  inventory: Record<string, InventoryItem[]>
+}
+
 const BASE =
   typeof window !== "undefined"
     ? window.location.origin
@@ -228,4 +264,16 @@ export const api = {
     del<any>(`/api/org/employees/${name}/pip`),
   listActivePips: () =>
     get<any[]>(`/api/org/pips`),
+  // Office game endpoints
+  getOfficeState: () => get<OfficeGameState>('/api/office/state'),
+  getStoreCatalog: () => get<StoreItem[]>('/api/office/store'),
+  getWallets: () => get<Record<string, Wallet>>('/api/office/wallets'),
+  purchaseItem: (employee: string, itemId: string) =>
+    post<{ success: boolean; balance: number }>('/api/office/store/purchase', { employee, itemId }),
+  placeDecoration: (itemId: string, room: string, owner: string, x: number, y: number) =>
+    put<Decoration>('/api/office/decorations', { itemId, room, owner, x, y }),
+  removeDecoration: (id: string) => del<{ success: boolean }>(`/api/office/decorations/${id}`),
+  getInventory: (name: string) => get<InventoryItem[]>(`/api/office/inventory/${name}`),
+  creditCoins: (employee: string, amount: number) =>
+    post<{ success: boolean; balance: number }>('/api/office/credit', { employee, amount }),
 };

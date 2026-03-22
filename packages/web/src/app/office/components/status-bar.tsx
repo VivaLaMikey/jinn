@@ -3,11 +3,15 @@
 import React, { memo } from 'react'
 import { STATUS_COLORS, DEPT_COLORS } from '../lib/pixel-palette'
 import type { OfficeEmployee } from '../hooks/use-office-state'
+import { WalletDisplay } from './wallet-display'
 
 interface StatusBarProps {
   employees: OfficeEmployee[]
   onCallMeeting: () => void
   onDepartmentFilter?: (dept: string | null) => void
+  onOpenStore?: () => void
+  onToggleDecorationMode?: () => void
+  decorationMode?: boolean
 }
 
 const STATUSES = [
@@ -43,6 +47,9 @@ export const StatusBar = memo(function StatusBar({
   employees,
   onCallMeeting,
   onDepartmentFilter,
+  onOpenStore,
+  onToggleDecorationMode,
+  decorationMode,
 }: StatusBarProps) {
   const counts = {
     idle: employees.filter((e) => e.status === 'idle').length,
@@ -141,8 +148,8 @@ export const StatusBar = memo(function StatusBar({
         })}
       </div>
 
-      {/* Right: total count + meeting button */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+      {/* Right: total count + action buttons */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
         <span
           style={{
             fontFamily: 'monospace',
@@ -153,7 +160,80 @@ export const StatusBar = memo(function StatusBar({
           {employees.length} EMP
         </span>
 
-        {/* Pixel-art game button */}
+        {/* Coin wallet display — clicking opens the store */}
+        <WalletDisplay onClick={onOpenStore} />
+
+        {/* Store button */}
+        {onOpenStore && (
+          <button
+            onClick={onOpenStore}
+            style={{
+              fontFamily: 'monospace',
+              fontSize: '9px',
+              padding: '2px 8px',
+              background: 'color-mix(in srgb, #ffd700 12%, transparent)',
+              border: 'none',
+              color: '#ffd700',
+              cursor: 'pointer',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              boxShadow: `
+                inset -2px -2px 0 0 rgba(0,0,0,0.5),
+                inset 2px 2px 0 0 rgba(255,255,255,0.10),
+                0 0 0 1px #ffd70060
+              `,
+            }}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLButtonElement).style.background =
+                'color-mix(in srgb, #ffd700 22%, transparent)'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLButtonElement).style.background =
+                'color-mix(in srgb, #ffd700 12%, transparent)'
+            }}
+          >
+            SHOP
+          </button>
+        )}
+
+        {/* Decoration mode toggle */}
+        {onToggleDecorationMode && (
+          <button
+            onClick={onToggleDecorationMode}
+            style={{
+              fontFamily: 'monospace',
+              fontSize: '9px',
+              padding: '2px 8px',
+              background: decorationMode
+                ? 'color-mix(in srgb, #b06cff 25%, transparent)'
+                : 'color-mix(in srgb, #b06cff 10%, transparent)',
+              border: 'none',
+              color: '#b06cff',
+              cursor: 'pointer',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              boxShadow: `
+                inset -2px -2px 0 0 rgba(0,0,0,0.5),
+                inset 2px 2px 0 0 rgba(255,255,255,0.10),
+                0 0 0 1px #b06cff60
+              `,
+              transition: 'background 0.1s',
+            }}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLButtonElement).style.background =
+                'color-mix(in srgb, #b06cff 22%, transparent)'
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLButtonElement).style.background = decorationMode
+                ? 'color-mix(in srgb, #b06cff 25%, transparent)'
+                : 'color-mix(in srgb, #b06cff 10%, transparent)'
+            }}
+          >
+            {decorationMode ? 'EXIT DECOR' : 'DECOR'}
+          </button>
+        )}
+
+        {/* Meeting button */}
         <button
           onClick={onCallMeeting}
           style={{

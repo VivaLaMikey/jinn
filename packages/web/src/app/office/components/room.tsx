@@ -5,6 +5,7 @@ import { Desk } from './desk'
 import type { OfficeEmployee } from '../hooks/use-office-state'
 import type { RoomDef } from '../lib/office-layout'
 import { getDeptColor, FLOOR_COLORS, WALL_COLORS } from '../lib/pixel-palette'
+import type { Decoration, StoreItem } from '@/lib/api'
 
 interface RoomProps {
   room: RoomDef
@@ -14,6 +15,14 @@ interface RoomProps {
   onSelectEmployee: (name: string) => void
   /** CSS grid-column value, e.g. "span 2". Defaults to "span 1". */
   gridColumn?: string
+  /** Decorations placed in this room. */
+  decorations?: Decoration[]
+  /** Full store catalog, used to resolve sprite from itemId. */
+  storeItems?: StoreItem[]
+  /** Whether decoration placement mode is active. */
+  decorationMode?: boolean
+  /** Called when the room background is clicked in decoration mode. */
+  onRoomClick?: (room: string, x: number, y: number) => void
 }
 
 // Enhanced corner plant with more detail
@@ -294,13 +303,26 @@ export const Room = memo(function Room({
   employees,
   onSelectEmployee,
   gridColumn = 'span 1',
+  decorations,
+  storeItems,
+  decorationMode,
+  onRoomClick,
 }: RoomProps) {
   const deptColor = getDeptColor(room.department)
   const nameSet = new Set(employeeNames)
   const roomEmployees = employees.filter((e) => nameSet.has(e.name))
 
+  const handleRoomClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!decorationMode || !onRoomClick) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * 100)
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * 100)
+    onRoomClick(room.name, x, y)
+  }
+
   return (
     <div
+      onClick={handleRoomClick}
       style={{
         gridColumn,
         position: 'relative',
@@ -327,6 +349,9 @@ export const Room = memo(function Room({
         `,
         overflow: 'hidden',
         minHeight: '120px',
+        cursor: decorationMode ? 'crosshair' : 'default',
+        outline: decorationMode ? `2px dashed ${deptColor}40` : 'none',
+        outlineOffset: '-4px',
       }}
     >
       {/* Wall trim at top */}
@@ -483,6 +508,27 @@ export const Room = memo(function Room({
         }}
         aria-hidden
       />
+
+      {/* Placed decorations */}
+      {decorations?.map((dec) => (
+        <div
+          key={dec.id}
+          style={{
+            position: 'absolute',
+            left: `${dec.x}%`,
+            top: `${dec.y}%`,
+            fontSize: '14px',
+            pointerEvents: decorationMode ? 'auto' : 'none',
+            cursor: decorationMode ? 'pointer' : 'default',
+            zIndex: 5,
+            transform: 'translate(-50%, -50%)',
+            userSelect: 'none',
+          }}
+          title={storeItems?.find((i) => i.id === dec.itemId)?.name}
+        >
+          {storeItems?.find((i) => i.id === dec.itemId)?.sprite ?? '?'}
+        </div>
+      ))}
     </div>
   )
 })

@@ -8,6 +8,7 @@ import { DustParticles } from './dust-particles'
 import { buildRoomsFromEmployees } from '../lib/office-layout'
 import type { OfficeEmployee, ActiveMeeting } from '../hooks/use-office-state'
 import { FLOOR_COLORS } from '../lib/pixel-palette'
+import type { Decoration, StoreItem } from '@/lib/api'
 
 interface OfficeFloorProps {
   employees: OfficeEmployee[]
@@ -15,6 +16,10 @@ interface OfficeFloorProps {
   onSelectEmployee: (name: string) => void
   cooTargetEmployee?: string | null
   departments: Map<string, string[]>
+  decorations?: Decoration[]
+  storeItems?: StoreItem[]
+  decorationMode?: boolean
+  onRoomClick?: (room: string, x: number, y: number) => void
 }
 
 // Polished water cooler
@@ -187,6 +192,10 @@ export const OfficeFloor = memo(function OfficeFloor({
   onSelectEmployee,
   cooTargetEmployee,
   departments,
+  decorations,
+  storeItems,
+  decorationMode,
+  onRoomClick,
 }: OfficeFloorProps) {
   const jinnEmployee = employees.find((e) => e.name === 'jinn') || null
 
@@ -277,6 +286,10 @@ export const OfficeFloor = memo(function OfficeFloor({
                 employees={employees}
                 onSelectEmployee={onSelectEmployee}
                 gridColumn={roomSpans[i]}
+                decorations={decorations?.filter((d) => d.room === room.name)}
+                storeItems={storeItems}
+                decorationMode={decorationMode}
+                onRoomClick={onRoomClick}
               />
             ))}
           </div>
