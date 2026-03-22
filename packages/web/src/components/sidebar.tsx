@@ -8,6 +8,7 @@ import {
   Moon,
   Palette,
   ArrowLeftRight,
+  Gauge,
 } from "lucide-react"
 import { useTheme } from "@/app/providers"
 import { useSettings } from "@/app/settings-provider"
@@ -36,8 +37,27 @@ function ThemeIcon({ theme }: { theme: ThemeId }) {
 // Usage indicator
 // ---------------------------------------------------------------------------
 
+interface UsageData {
+  fiveHour: { utilization: number; resetsAt: string | null } | null
+  sevenDay: { utilization: number; resetsAt: string | null } | null
+}
+
+function usageColor(pct: number): string {
+  return pct < 50 ? 'var(--system-green)' : pct < 75 ? 'var(--system-orange, #f59e0b)' : 'var(--system-red, #ef4444)'
+}
+
+function formatReset(resetsAt: string | null): string {
+  if (!resetsAt) return ''
+  const diff = new Date(resetsAt).getTime() - Date.now()
+  if (diff <= 0) return ''
+  const mins = Math.round(diff / 60_000)
+  if (mins >= 1440) return `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`
+  if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`
+  return `${mins}m`
+}
+
 function UsageIndicator({ hovered }: { hovered: boolean }) {
-  const [usage, setUsage] = useState<{ utilization: number; resetsAt: string | null } | null>(null)
+  const [usage, setUsage] = useState<UsageData | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -45,11 +65,17 @@ function UsageIndicator({ hovered }: { hovered: boolean }) {
       try {
         const data = await api.getUsage()
         if (!mounted) return
-        if (data.status === 'unavailable' || data.utilization === undefined) {
-          setUsage(null)
-          return
-        }
-        setUsage({ utilization: data.utilization, resetsAt: data.resetsAt ?? null })
+        if (data.status === 'unavailable') { setUsage(null); return }
+        const fiveHour = data.fiveHour
+          ? { utilization: data.fiveHour.utilization, resetsAt: data.fiveHour.resetsAt ?? null }
+          : data.utilization !== undefined
+            ? { utilization: data.utilization, resetsAt: data.resetsAt ?? null }
+            : null
+        const sevenDay = data.sevenDay
+          ? { utilization: data.sevenDay.utilization, resetsAt: data.sevenDay.resetsAt ?? null }
+          : null
+        if (!fiveHour) { setUsage(null); return }
+        setUsage({ fiveHour, sevenDay })
       } catch {
         if (mounted) setUsage(null)
       }
@@ -59,40 +85,51 @@ function UsageIndicator({ hovered }: { hovered: boolean }) {
     return () => { mounted = false; clearInterval(interval) }
   }, [])
 
-  if (!usage) return null
+  if (!usage?.fiveHour) return null
 
-  const pct = Math.round(usage.utilization)
-  const color = pct < 50 ? 'var(--system-green)' : pct < 75 ? 'var(--system-orange, #f59e0b)' : 'var(--system-red)'
+  const pct5h = Math.round(usage.fiveHour.utilization)
+  const color5h = usageColor(pct5h)
+  const reset5h = formatReset(usage.fiveHour.resetsAt)
 
-  let resetLabel = ''
-  if (usage.resetsAt) {
-    const diff = new Date(usage.resetsAt).getTime() - Date.now()
-    if (diff > 0) {
-      const mins = Math.round(diff / 60_000)
-      resetLabel = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
-    }
-  }
+  const pct7d = usage.sevenDay ? Math.round(usage.sevenDay.utilization) : null
+  const color7d = pct7d !== null ? usageColor(pct7d) : undefined
 
   return (
-    <div className="px-2 pt-1">
-      <div className="flex h-10 w-full items-center gap-2.5 rounded-md px-3 text-[13px] text-muted-foreground">
-        <div className="relative h-1.5 w-5 shrink-0 overflow-hidden rounded-full bg-[var(--fill-tertiary)]">
-          <div
-            className="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
-            style={{ width: `${Math.min(pct, 100)}%`, background: color }}
-          />
-        </div>
-        <span className={cn(
-          "whitespace-nowrap transition-opacity duration-200",
+    <div className="shrink-0 px-2 pt-1">
+      <div className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-[13px] text-muted-foreground">
+        <Gauge size={18} className="shrink-0" style={{ color: color5h }} />
+        <div className={cn(
+          "flex flex-col gap-0.5 whitespace-nowrap transition-opacity duration-200 min-w-0",
           hovered ? "opacity-100" : "opacity-0"
         )}>
-          <span style={{ color }}>{pct}%</span>
-          {resetLabel && (
-            <span className="ml-1.5 text-[11px] text-[var(--text-quaternary)]">
-              resets {resetLabel}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-[var(--text-quaternary)] w-[18px]">5h</span>
+            <div className="relative h-1.5 flex-1 min-w-[60px] overflow-hidden rounded-full bg-[var(--fill-tertiary)]">
+              <div
+                className="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
+                style={{ width: `${Math.min(pct5h, 100)}%`, background: color5h }}
+              />
+            </div>
+            <span className="text-[12px] font-medium w-[32px] text-right" style={{ color: color5h }}>{pct5h}%</span>
+          </div>
+          {pct7d !== null && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-[var(--text-quaternary)] w-[18px]">7d</span>
+              <div className="relative h-1.5 flex-1 min-w-[60px] overflow-hidden rounded-full bg-[var(--fill-tertiary)]">
+                <div
+                  className="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(pct7d, 100)}%`, background: color7d }}
+                />
+              </div>
+              <span className="text-[12px] font-medium w-[32px] text-right" style={{ color: color7d }}>{pct7d}%</span>
+            </div>
+          )}
+          {reset5h && (
+            <span className="text-[10px] text-[var(--text-quaternary)] pl-[24px]">
+              resets {reset5h}
             </span>
           )}
-        </span>
+        </div>
       </div>
     </div>
   )

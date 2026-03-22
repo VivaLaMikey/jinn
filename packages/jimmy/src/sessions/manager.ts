@@ -29,6 +29,7 @@ import { isSessionFrozen } from "../gateway/restart-tracker.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
+import { getFullCachedUsage } from "../shared/usagePoller.js";
 import { checkBudget } from "../gateway/budgets.js";
 import { resolveMcpServers, writeMcpConfigFile, cleanupMcpConfigFile } from "../mcp/resolver.js";
 
@@ -855,6 +856,64 @@ export class SessionManager {
         ...connectorLines,
       ].join("\n");
       await connector.replyMessage(target, info);
+      return true;
+    }
+
+    if (text === "/usage" || text.startsWith("/usage ")) {
+      const usage = getFullCachedUsage();
+      if (!usage) {
+        await connector.replyMessage(target, "Usage data not available — poller may not be active.");
+        return true;
+      }
+
+      const fiveHour = usage.fiveHour;
+      const sevenDay = usage.sevenDay;
+      const sevenDaySonnet = usage.sevenDaySonnet;
+      const extra = usage.extraUsage;
+
+      const formatReset = (resetsAt: string | null): string => {
+        if (!resetsAt) return "unknown";
+        const diff = new Date(resetsAt).getTime() - Date.now();
+        if (diff <= 0) return "now";
+        const h = Math.floor(diff / 3_600_000);
+        const m = Math.floor((diff % 3_600_000) / 60_000);
+        return h > 0 ? `${h}h ${m}m` : `${m}m`;
+      };
+
+      const bar = (pct: number): string => {
+        const filled = Math.round(pct / 5);
+        return "[" + "█".repeat(filled) + "░".repeat(20 - filled) + "]";
+      };
+
+      const lines = [
+        "USAGE REPORT",
+        "",
+        `5-Hour Window: ${fiveHour.utilization}%  ${bar(fiveHour.utilization)}`,
+        `  Resets in: ${formatReset(fiveHour.resetsAt)}`,
+      ];
+
+      if (sevenDay) {
+        lines.push("");
+        lines.push(`7-Day (Opus): ${sevenDay.utilization}%  ${bar(sevenDay.utilization)}`);
+        lines.push(`  Resets in: ${formatReset(sevenDay.resetsAt)}`);
+      }
+
+      if (sevenDaySonnet) {
+        lines.push("");
+        lines.push(`7-Day (Sonnet): ${sevenDaySonnet.utilization}%  ${bar(sevenDaySonnet.utilization)}`);
+        lines.push(`  Resets in: ${formatReset(sevenDaySonnet.resetsAt)}`);
+      }
+
+      if (extra) {
+        lines.push("");
+        lines.push(`Extra Usage: $${extra.usedCredits.toFixed(0)} / $${extra.monthlyLimit} (${extra.utilization.toFixed(1)}%)  ${bar(extra.utilization)}`);
+      }
+
+      const age = Math.round((Date.now() - new Date(usage.fetchedAt).getTime()) / 60_000);
+      lines.push("");
+      lines.push(`Last fetched: ${age}m ago`);
+
+      await connector.replyMessage(target, lines.join("\n"));
       return true;
     }
 

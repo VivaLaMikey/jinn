@@ -45,7 +45,7 @@ import { resolveEffort } from "../shared/effort.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { isCircuitOpen, getCircuitState } from "../shared/circuitBreaker.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit, isPacingExceeded, isLikelyNearClaudeUsageLimit, type UsageMonitor } from "../shared/usageAwareness.js";
-import { getCachedUsage } from "../shared/usagePoller.js";
+import { getCachedUsage, getFullCachedUsage } from "../shared/usagePoller.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
@@ -259,6 +259,28 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
+/**
+ * Compute pacing info for a usage window.
+ * @param utilization Current utilization percentage (0-100)
+ * @param resetsAt ISO timestamp when the window resets
+ * @param windowMinutes Total window duration in minutes (300 for 5h, 10080 for 7d)
+ */
+function computePacing(utilization: number, resetsAt: string | null, windowMinutes: number) {
+  if (!resetsAt) return { pacingExceeded: false, elapsedMinutes: 0, remainingMinutes: windowMinutes, expectedUtilization: 0 };
+
+  const windowMs = windowMinutes * 60_000;
+  const resetsAtMs = new Date(resetsAt).getTime();
+  const windowStartMs = resetsAtMs - windowMs;
+  const elapsedMs = Math.max(0, Date.now() - windowStartMs);
+  const elapsedMinutes = Math.round(elapsedMs / 60_000);
+  const remainingMinutes = Math.max(0, Math.round((resetsAtMs - Date.now()) / 60_000));
+  const elapsedFraction = Math.min(elapsedMs / windowMs, 1);
+  const expectedUtilization = Math.round(elapsedFraction * 100);
+  const pacingExceeded = utilization > expectedUtilization + 10; // 10% buffer
+
+  return { pacingExceeded, elapsedMinutes, remainingMinutes, expectedUtilization };
+}
+
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
   for (const key of Object.keys(source)) {
@@ -394,32 +416,48 @@ export async function handleApiRequest(
 
     // GET /api/usage — return Anthropic usage data and pacing recommendation
     if (method === "GET" && pathname === "/api/usage") {
-      const pollerData = getCachedUsage();
+      const fullData = getFullCachedUsage();
 
-      if (pollerData) {
+      if (fullData) {
+        // Pacing logic for 5-hour window
+        const fiveHourPacing = computePacing(fullData.fiveHour.utilization, fullData.fiveHour.resetsAt, 5 * 60);
+        // Pacing logic for 7-day window
+        const sevenDayPacing = fullData.sevenDay
+          ? computePacing(fullData.sevenDay.utilization, fullData.sevenDay.resetsAt, 7 * 24 * 60)
+          : null;
+
         return json(res, {
-          utilization: pollerData.utilization,
-          resetsAt: pollerData.resetsAt,
-          fetchedAt: pollerData.fetchedAt,
-          pacingExceeded: isPacingExceeded(),
-          nearLimit: isLikelyNearClaudeUsageLimit(),
-          error: pollerData.error ?? null,
+          fiveHour: {
+            utilization: fullData.fiveHour.utilization,
+            resetsAt: fullData.fiveHour.resetsAt,
+            ...fiveHourPacing,
+          },
+          sevenDay: fullData.sevenDay ? {
+            utilization: fullData.sevenDay.utilization,
+            resetsAt: fullData.sevenDay.resetsAt,
+            ...sevenDayPacing,
+          } : null,
+          sevenDaySonnet: fullData.sevenDaySonnet ? {
+            utilization: fullData.sevenDaySonnet.utilization,
+            resetsAt: fullData.sevenDaySonnet.resetsAt,
+          } : null,
+          extraUsage: fullData.extraUsage,
+          fetchedAt: fullData.fetchedAt,
+          shouldThrottle: fiveHourPacing.pacingExceeded || (sevenDayPacing?.pacingExceeded ?? false),
+          error: fullData.error ?? null,
         });
       }
 
-      // Fallback: use old usageMonitor if poller has no data yet
-      const monitor = context.usageMonitor;
-      const usage = monitor ? monitor.getUsage() : null;
-
-      if (usage) {
-        const throttle = monitor!.shouldThrottle();
+      // Legacy fallback
+      const legacyData = getCachedUsage();
+      if (legacyData) {
         return json(res, {
-          utilization: usage.fiveHour?.utilization ?? null,
-          resetsAt: usage.fiveHour?.resetsAt ?? null,
-          fetchedAt: usage.fetchedAt ?? null,
-          pacingExceeded: throttle.shouldThrottle,
-          nearLimit: isLikelyNearClaudeUsageLimit(),
-          error: null,
+          fiveHour: { utilization: legacyData.utilization, resetsAt: legacyData.resetsAt },
+          sevenDay: null,
+          extraUsage: null,
+          fetchedAt: legacyData.fetchedAt,
+          shouldThrottle: isPacingExceeded(),
+          error: legacyData.error ?? null,
         });
       }
 

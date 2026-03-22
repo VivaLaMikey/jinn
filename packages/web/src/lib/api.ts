@@ -196,7 +196,7 @@ export const api = {
       {},
     ),
   getUsage: () =>
-    get<{ utilization?: number; resetsAt?: string | null; fetchedAt?: number; pacingExceeded?: boolean; nearLimit?: boolean; error?: string | null; status?: string; reason?: string }>(
+    get<{ utilization?: number; resetsAt?: string | null; fetchedAt?: number; pacingExceeded?: boolean; nearLimit?: boolean; error?: string | null; status?: string; reason?: string; fiveHour?: { utilization: number; resetsAt: string | null }; sevenDay?: { utilization: number; resetsAt: string | null } | null }>(
       "/api/usage",
     ),
   uploadFile: async (file: File): Promise<UploadedFile> => {
