@@ -296,8 +296,6 @@ export const CooOffice = memo(function CooOffice({
   return (
     <div
       style={{
-        gridColumn: '5',
-        gridRow: '1',
         position: 'relative',
         border: `1px solid ${deptColor}30`,
         borderTop: `3px solid ${deptColor}`,

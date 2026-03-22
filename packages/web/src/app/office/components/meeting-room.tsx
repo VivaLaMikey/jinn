@@ -179,8 +179,6 @@ export const MeetingRoom = memo(function MeetingRoom({
       <style>{LIVE_PULSE_KEYFRAME}</style>
       <div
         style={{
-          gridColumn: '5',
-          gridRow: '3',
           position: 'relative',
           border: `1px solid ${deptColor}25`,
           borderTop: `3px solid ${deptColor}`,
