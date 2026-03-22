@@ -160,7 +160,7 @@ function CorridorStrip({ onNoticeBoard }: { onNoticeBoard?: () => void }) {
         display: 'flex',
         alignItems: 'center',
         position: 'relative',
-        height: '36px',
+        height: '44px',
         flexShrink: 0,
         // Alternating warm tile stripes evoking isometric corridor flooring
         background: `repeating-linear-gradient(
@@ -249,43 +249,45 @@ function BuildingSign() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '5px 8px',
-        borderBottom: `2px solid ${FURNITURE_COLORS.wood_med}`,
-        background: FURNITURE_COLORS.wood_dark,
+        padding: '8px 12px',
+        borderBottom: `3px solid ${FURNITURE_COLORS.wood_med}`,
+        background: `linear-gradient(180deg, #5A3018 0%, ${FURNITURE_COLORS.wood_dark} 100%)`,
         flexShrink: 0,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
         {/* Decorative isometric diamond pillars */}
         <div
           style={{
-            width: '8px',
-            height: '8px',
+            width: '10px',
+            height: '10px',
             background: '#E8A020',
             transform: 'rotate(45deg)',
-            opacity: 0.6,
+            opacity: 0.7,
+            boxShadow: '0 0 6px #E8A02040',
           }}
         />
         <span
           style={{
             fontFamily: 'monospace',
-            fontSize: '10px',
+            fontSize: '13px',
             fontWeight: 700,
             color: '#E8A020',
-            letterSpacing: '0.28em',
+            letterSpacing: '0.35em',
             textTransform: 'uppercase',
-            textShadow: '0 0 10px #E8A02060, 0 1px 0 rgba(0,0,0,0.5)',
+            textShadow: '0 0 12px #E8A02060, 0 1px 0 rgba(0,0,0,0.5)',
           }}
         >
           JINN HQ
         </span>
         <div
           style={{
-            width: '8px',
-            height: '8px',
+            width: '10px',
+            height: '10px',
             background: '#E8A020',
             transform: 'rotate(45deg)',
-            opacity: 0.6,
+            opacity: 0.7,
+            boxShadow: '0 0 6px #E8A02040',
           }}
         />
       </div>
@@ -366,10 +368,10 @@ export const OfficeFloor = memo(function OfficeFloor({
           flex: 1,
           minHeight: 0,
           overflow: 'auto',
-          padding: '8px',
+          padding: '12px 16px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '6px',
+          gap: '12px',
           position: 'relative',
           cursor: (!decorationMode && onTileClick) ? 'pointer' : 'default',
         }}
@@ -382,9 +384,9 @@ export const OfficeFloor = memo(function OfficeFloor({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
+                gridTemplateColumns: 'repeat(2, 1fr)',
                 gridAutoRows: '1fr',
-                gap: '6px',
+                gap: '12px',
               }}
             >
               {rooms.map((room, i) => (
@@ -414,7 +416,7 @@ export const OfficeFloor = memo(function OfficeFloor({
           style={{
             display: 'grid',
             gridTemplateColumns: breakEmployees.length > 0 ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
-            gap: '6px',
+            gap: '12px',
           }}
         >
           <CooOffice

@@ -96,11 +96,11 @@ export const FURNITURE_COLORS = {
   plastic:    '#C8B898',  // warm cream plastic
 }
 
-// Floor tile palette — warm Habbo-style browns and tans
+// Floor tile palette — Habbo-style high-contrast checkerboard
 export const FLOOR_COLORS = {
-  tile_light: '#D4BC98',  // warm cream tile
-  tile_dark:  '#C4A882',  // warm tan tile
-  carpet:     '#B89B6E',  // warm sandy carpet
+  tile_light: '#D8C4A0',  // warm cream tile
+  tile_dark:  '#BDA67A',  // warm tan tile (more contrast)
+  carpet:     '#A89060',  // warm sandy carpet
 }
 
 // Wall palette — warm Habbo-style creams and beiges

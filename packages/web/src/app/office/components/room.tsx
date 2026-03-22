@@ -8,6 +8,7 @@ import {
   getDeptColor,
   FLOOR_COLORS,
   WALL_COLORS,
+  FURNITURE_COLORS,
 } from '../lib/pixel-palette'
 import {
   TILE_WIDTH,
@@ -38,16 +39,16 @@ interface RoomProps {
 // ---------------------------------------------------------------------------
 // Room grid configuration
 // ---------------------------------------------------------------------------
-const ROOM_COLS = 6   // tiles across
-const ROOM_ROWS = 5   // tiles deep
+const ROOM_COLS = 8   // tiles across (Habbo rooms are spacious)
+const ROOM_ROWS = 6   // tiles deep
 
 // Compute the total pixel width and height needed to contain the isometric grid
 // Width  = (cols + rows) * TILE_WIDTH / 2
 // Height = (cols + rows) * TILE_HEIGHT / 2  + wall height overhead
 const ISO_GRID_W  = (ROOM_COLS + ROOM_ROWS) * (TILE_WIDTH / 2)
 const ISO_GRID_H  = (ROOM_COLS + ROOM_ROWS) * (TILE_HEIGHT / 2)
-const WALL_HEIGHT = 80  // pixel height of the back/left walls
-const ROOM_PAD_TOP = 24 // extra top padding above the walls for the room header
+const WALL_HEIGHT = 110  // pixel height of the back/left walls (Habbo walls are tall)
+const ROOM_PAD_TOP = 28  // extra top padding above the walls for the room header
 
 // Total room container height
 const ROOM_CONTAINER_H = ISO_GRID_H + WALL_HEIGHT + ROOM_PAD_TOP + 48  // +48 for name labels below desks
@@ -77,14 +78,21 @@ function FloorTile({ gridX, gridY, tileColor, highlightColor }: TileProps) {
         top: `${y}px`,
         width: `${TILE_WIDTH}px`,
         height: `${TILE_HEIGHT}px`,
-        background: bg,
         clipPath: getTileClipPath(),
-        // 1px inset border effect — we use a box-shadow on the inside
-        // (clip-path clips overflow so we use filter instead)
-        filter: 'brightness(1)',
       }}
       aria-hidden
-    />
+    >
+      {/* Tile fill */}
+      <div style={{ position: 'absolute', inset: 0, background: bg }} />
+      {/* Habbo-style highlight edge — top-left edges are lighter */}
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: 'linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 50%, rgba(0,0,0,0.08) 100%)',
+        }}
+      />
+    </div>
   )
 }
 
@@ -414,15 +422,15 @@ export const Room = memo(function Room({
   // Desks are placed in a left-to-right, front-to-back sweep
   const deskPositions = useMemo(() => {
     const positions: { gridX: number; gridY: number }[] = []
-    // Spread desks starting from col 1 row 1, two per row
+    // Spread desks starting from col 1 row 1, with spacing to fill larger rooms
     let col = 1
     let row = 1
     for (let i = 0; i < roomEmployees.length; i++) {
       positions.push({ gridX: col, gridY: row })
-      col += 2
+      col += 3  // more spacing between desks (was 2)
       if (col >= ROOM_COLS - 1) {
         col = 1
-        row++
+        row += 2  // more vertical spacing between rows (was 1)
       }
     }
     return positions
@@ -442,32 +450,37 @@ export const Room = memo(function Room({
         outline: decorationMode ? `2px dashed ${deptColor}60` : 'none',
         outlineOffset: '-4px',
         // Warm drop shadow — Habbo-style room card feel
-        filter: `drop-shadow(0 8px 24px rgba(100,60,20,0.3))`,
+        filter: `drop-shadow(0 6px 16px rgba(60,30,10,0.35))`,
+        background: WALL_COLORS.trim,
+        borderRadius: '4px',
+        overflow: 'hidden',
       }}
     >
-      {/* Room label — above the room, never clipped */}
+      {/* Room label — Habbo-style room name plate */}
       <div
         style={{
           position: 'absolute',
-          top: '2px',
+          top: '4px',
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 20,
-          background: `${deptColor}20`,
-          border: `1px solid ${deptColor}60`,
-          borderRadius: '4px',
-          padding: '2px 10px',
+          background: FURNITURE_COLORS.wood_dark,
+          border: `2px solid ${deptColor}`,
+          borderRadius: '3px',
+          padding: '3px 14px',
           whiteSpace: 'nowrap',
+          boxShadow: `0 2px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)`,
         }}
       >
         <span
           style={{
             fontFamily: 'monospace',
-            fontSize: '9px',
+            fontSize: '10px',
             fontWeight: 700,
             color: deptColor,
             textTransform: 'uppercase',
-            letterSpacing: '0.1em',
+            letterSpacing: '0.15em',
+            textShadow: `0 0 8px ${deptColor}60`,
           }}
         >
           {room.name}
@@ -480,7 +493,7 @@ export const Room = memo(function Room({
           position: 'absolute',
           top: `${ROOM_PAD_TOP}px`,
           left: `${gridOriginX}px`,
-          width: `${(ROOM_COLS) * (TILE_WIDTH / 2) + (ROOM_COLS) * (TILE_HEIGHT / 2)}px`,
+          width: `${ROOM_COLS * (TILE_WIDTH / 2) + ROOM_ROWS * (TILE_HEIGHT / 2)}px`,
           height: `${WALL_HEIGHT}px`,
           background: `linear-gradient(160deg, ${WALL_COLORS.accent} 0%, ${WALL_COLORS.base} 100%)`,
           borderTop: `3px solid ${deptColor}`,
@@ -490,8 +503,8 @@ export const Room = memo(function Room({
         }}
         aria-hidden
       >
-        {/* Horizontal wall stripe lines for texture */}
-        {[20, 36, 52, 68].map(h => (
+        {/* Horizontal wallpaper lines — Habbo-style panelling */}
+        {[18, 36, 54, 72, 90].map(h => (
           <div
             key={h}
             style={{
@@ -500,10 +513,22 @@ export const Room = memo(function Room({
               left: 0,
               right: 0,
               height: '1px',
-              background: `${WALL_COLORS.trim}80`,
+              background: `${WALL_COLORS.trim}70`,
             }}
           />
         ))}
+        {/* Baseboard — dark strip where wall meets floor */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: '6px',
+            background: FURNITURE_COLORS.wood_dark,
+            opacity: 0.5,
+          }}
+        />
         {/* Wall art */}
         <div
           style={{

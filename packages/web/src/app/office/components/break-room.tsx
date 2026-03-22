@@ -236,7 +236,7 @@ export const BreakRoom = memo(function BreakRoom({
         borderTop: `4px solid ${deptColor}`,
         borderRadius: '4px',
         overflow: 'hidden',
-        minHeight: '160px',
+        minHeight: '220px',
         boxShadow: `inset 0 0 28px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.28)`,
       }}
     >
@@ -361,12 +361,13 @@ export const BreakRoom = memo(function BreakRoom({
                 />
               )}
 
-              <div style={{ height: '48px', width: '32px', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+              <div style={{ height: '84px', width: '60px', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
                 <EmployeeSprite
                   name={emp.name}
                   department={emp.department}
                   status={emp.status}
-                  scale={2}
+                  scale={3}
+                  relaxed
                 />
               </div>
 

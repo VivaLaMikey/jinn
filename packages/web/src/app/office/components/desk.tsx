@@ -421,24 +421,35 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
           />
         </div>
 
-        {/* Name label */}
-        <span
+        {/* Habbo-style name plate */}
+        <div
           style={{
-            fontFamily: 'monospace',
-            fontSize: '8px',
-            fontWeight: 600,
-            color: '#5A4A38',
-            textAlign: 'center',
-            lineHeight: 1.1,
-            maxWidth: `${ISO_DESK_W}px`,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
+            background: '#FFFEF8',
+            border: `1px solid ${deptColor}80`,
+            borderRadius: '3px',
+            padding: '1px 6px',
             marginTop: '2px',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
           }}
         >
-          {employee.displayName}
-        </span>
+          <span
+            style={{
+              fontFamily: 'monospace',
+              fontSize: '8px',
+              fontWeight: 700,
+              color: deptColor,
+              textAlign: 'center',
+              lineHeight: 1.2,
+              maxWidth: `${ISO_DESK_W}px`,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              display: 'block',
+            }}
+          >
+            {employee.displayName}
+          </span>
+        </div>
 
         {/* Status indicator dot */}
         <div
