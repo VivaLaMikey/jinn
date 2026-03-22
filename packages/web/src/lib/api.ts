@@ -19,6 +19,16 @@ export interface QueueItem {
   createdAt: string;
 }
 
+export interface EmployeeAppearance {
+  skinTone: string
+  hairColor: string
+  hairStyle: 'short' | 'long' | 'mohawk' | 'bald' | 'ponytail' | 'curly' | 'spiky' | 'bob'
+  shirtColor?: string
+  pantsColor: string
+  shoeColor: string
+  accessory: 'none' | 'glasses' | 'headphones' | 'hat' | 'bowtie' | 'scarf'
+}
+
 export interface Employee {
   name: string;
   displayName: string;
@@ -28,6 +38,7 @@ export interface Employee {
   model: string;
   persona: string;
   emoji?: string;
+  appearance?: EmployeeAppearance;
 }
 
 export interface OrgData {

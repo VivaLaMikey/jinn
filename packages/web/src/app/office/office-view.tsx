@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useCallback, useEffect, useReducer } from 'react'
 import { useOfficeState } from './hooks/use-office-state'
 import { TitleBar } from './components/title-bar'
 import { OfficeFloor } from './components/office-floor'
@@ -43,6 +43,14 @@ export default function OfficeView() {
     setTaskAssignerTarget(null)
   }, [])
 
+  // Force a re-render on window resize so the flex layout recalculates
+  const [, forceUpdate] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    const handleResize = () => forceUpdate()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
   // Listen for session:created events — if any manager delegates, trigger COO walk
   useEffect(() => {
     if (!subscribe) return
@@ -71,6 +79,7 @@ export default function OfficeView() {
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
+        minHeight: 0,
         width: '100%',
         background: 'var(--bg, #0a0a0a)',
         overflow: 'hidden',

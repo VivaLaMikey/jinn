@@ -4,16 +4,22 @@ import React, { memo, useRef, useEffect, useCallback } from 'react'
 import { STATUS_COLORS } from '../lib/pixel-palette'
 import {
   generateCharacterPalette,
+  paletteFromAppearance,
+  resolveAccessoryColor,
   drawSpriteFrame,
+  drawSpriteWithAppearance,
   SPRITE_FRAMES,
 } from '../lib/sprite-utils'
 import type { EmployeeStatus } from '../hooks/use-office-state'
+import type { EmployeeAppearance } from '@/lib/api'
 
 interface EmployeeSpriteProps {
   name: string
   department: string
   status: EmployeeStatus
-  scale?: 3 | 4
+  scale?: 2 | 3 | 4
+  /** When provided, overrides the deterministic palette with appearance data */
+  appearance?: EmployeeAppearance
 }
 
 // Native canvas dimensions
@@ -33,6 +39,7 @@ export const EmployeeSprite = memo(function EmployeeSprite({
   department,
   status,
   scale = 3,
+  appearance,
 }: EmployeeSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameIndexRef = useRef(0)
@@ -53,11 +60,18 @@ export const EmployeeSprite = memo(function EmployeeSprite({
     if (!frames || frames.length === 0) return
 
     const frame = frames[frameIndexRef.current % frames.length]
-    const palette = generateCharacterPalette(name, department)
 
     ctx.clearRect(0, 0, SPRITE_W, SPRITE_H)
-    drawSpriteFrame(ctx, frame, palette, 0, 0)
-  }, [name, department, status])
+
+    if (appearance) {
+      const accColor = resolveAccessoryColor(appearance.accessory, appearance.shirtColor)
+      const palette = paletteFromAppearance(appearance, accColor)
+      drawSpriteWithAppearance(ctx, frame, palette, appearance.hairStyle, appearance.accessory, 0, 0)
+    } else {
+      const palette = generateCharacterPalette(name, department)
+      drawSpriteFrame(ctx, frame, palette, 0, 0)
+    }
+  }, [name, department, status, appearance])
 
   // Start animation loop
   useEffect(() => {
@@ -79,7 +93,7 @@ export const EmployeeSprite = memo(function EmployeeSprite({
         intervalRef.current = null
       }
     }
-  }, [name, department, status, drawCurrentFrame])
+  }, [name, department, status, appearance, drawCurrentFrame])
 
   return (
     <div

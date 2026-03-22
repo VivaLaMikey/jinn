@@ -210,6 +210,16 @@ export interface Employee {
   maxCostUsd?: number;
   /** Default effort level for sessions assigned to this employee */
   effortLevel?: string;
+  /** Visual appearance config for office sprites */
+  appearance?: {
+    skinTone: string;
+    hairColor: string;
+    hairStyle: 'short' | 'long' | 'mohawk' | 'bald' | 'ponytail' | 'curly' | 'spiky' | 'bob';
+    shirtColor: string;
+    pantsColor: string;
+    shoeColor: string;
+    accessory: 'none' | 'glasses' | 'headphones' | 'hat' | 'badge' | 'bowtie' | 'scarf';
+  };
 }
 
 export interface Department {

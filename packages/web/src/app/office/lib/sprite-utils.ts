@@ -5,6 +5,9 @@ import {
   SHOE_COLORS,
   DEPT_COLORS,
 } from './pixel-palette'
+import type { EmployeeAppearance } from '@/lib/api'
+
+export { type EmployeeAppearance }
 
 export function nameHash(name: string): number {
   return name.split('').reduce((a, c) => a + c.charCodeAt(0), 0)
@@ -70,6 +73,24 @@ export function generateCharacterPalette(
     eye: '#1a1a2a',
     outline: '#0d0d14',
     shadow: '#00000033',
+  }
+}
+
+/** Build palette from explicit appearance data */
+export function paletteFromAppearance(
+  appearance: EmployeeAppearance,
+  accessoryColor?: string,
+): CharacterPalette {
+  return {
+    skin: appearance.skinTone || SKIN_COLORS[0],
+    hair: appearance.hairColor,
+    shirt: appearance.shirtColor || '#888888',
+    pants: appearance.pantsColor,
+    shoes: appearance.shoeColor || SHOE_COLORS[0],
+    eye: '#1a1a2a',
+    outline: '#0d0d14',
+    shadow: '#00000033',
+    acc: accessoryColor || '#ffd700',
   }
 }
 
@@ -326,4 +347,173 @@ export const SPRITE_FRAMES: Record<string, SpriteFrame[]> = {
   work: [WORK_0, WORK_1, WORK_2],
   meeting: [MEETING_0, MEETING_1],
   error: [ERROR_0, ERROR_1],
+}
+
+// ---------------------------------------------------------------------------
+// Hair style modifiers — transform rows 0-2 (and optionally nearby rows)
+// of a base frame to reflect different hair styles.
+// ---------------------------------------------------------------------------
+
+export const HAIR_STYLES: Record<string, (frame: SpriteFrame) => SpriteFrame> = {
+  short: (frame) => frame, // default — no change
+  bald: (frame) => {
+    const f = frame.map((r) => [...r])
+    // Replace hair with skin on rows 0-2
+    f[0] = [_,_,_,_,_,O,O,O,O,O,O,_,_,_,_,_]
+    f[1] = [_,_,_,_,O,S,S,S,S,S,S,O,_,_,_,_]
+    f[2] = [_,_,_,O,S,S,S,S,S,S,S,S,O,_,_,_]
+    return f
+  },
+  long: (frame) => {
+    const f = frame.map((r) => [...r])
+    // Hair extends down the sides of the face
+    f[3] = [_,_,_,O,H,S,E,S,S,E,S,H,O,_,_,_]
+    f[4] = [_,_,_,O,H,S,S,S,S,S,S,H,O,_,_,_]
+    f[5] = [_,_,_,_,O,H,S,S,S,S,H,O,_,_,_,_]
+    return f
+  },
+  mohawk: (frame) => {
+    const f = frame.map((r) => [...r])
+    // Tall centre strip
+    f[0] = [_,_,_,_,_,_,_,O,H,O,_,_,_,_,_,_]
+    f[1] = [_,_,_,_,_,O,O,H,H,O,O,_,_,_,_,_]
+    return f
+  },
+  ponytail: (frame) => {
+    const f = frame.map((r) => [...r])
+    // Hair extends to one side at the back
+    f[1] = [_,_,_,_,O,H,H,H,H,H,H,O,O,_,_,_]
+    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,O,H,_,_]
+    f[3] = [_,_,_,O,S,S,E,S,S,E,S,S,O,H,O,_]
+    f[4] = [_,_,_,O,S,S,S,S,S,S,S,S,O,H,O,_]
+    return f
+  },
+  curly: (frame) => {
+    const f = frame.map((r) => [...r])
+    // Wider, rounder hair
+    f[0] = [_,_,_,_,O,H,O,H,O,H,O,H,_,_,_,_]
+    f[1] = [_,_,_,O,H,O,H,H,H,H,O,H,O,_,_,_]
+    f[2] = [_,_,O,H,H,H,H,H,H,H,H,H,H,O,_,_]
+    return f
+  },
+  spiky: (frame) => {
+    const f = frame.map((r) => [...r])
+    // Spiky tips above the head
+    f[0] = [_,_,_,_,O,H,_,O,H,_,O,H,_,_,_,_]
+    f[1] = [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_]
+    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_]
+    return f
+  },
+  bob: (frame) => {
+    const f = frame.map((r) => [...r])
+    // Blunt straight cut that frames the face
+    f[2] = [_,_,_,O,H,H,H,H,H,H,H,H,O,_,_,_]
+    f[3] = [_,_,_,O,H,S,E,S,S,E,S,H,O,_,_,_]
+    f[4] = [_,_,_,O,H,S,S,S,S,S,S,H,O,_,_,_]
+    f[5] = [_,_,_,_,O,H,H,H,H,H,H,O,_,_,_,_]
+    return f
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Accessory overlays — a sparse SpriteFrame placed on top of the base sprite.
+// Null cells are transparent (skipped when drawing).
+// 'acc' key resolves to the palette's acc colour.
+// ---------------------------------------------------------------------------
+
+const ACC = 'acc'
+
+export const ACCESSORY_OVERLAYS: Record<string, SpriteFrame> = {
+  none: [],
+  glasses: (() => {
+    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
+    // Glasses frames at eye level (row 3)
+    frame[3] = [_,_,_,_,_,O,O,O,_,O,O,O,_,_,_,_]
+    return frame
+  })(),
+  headphones: (() => {
+    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
+    // Headband on row 0, ear cups on rows 2-3
+    frame[0] = [_,_,_,_,O,ACC,O,O,O,O,ACC,O,_,_,_,_]
+    frame[2] = [_,_,O,ACC,_,_,_,_,_,_,_,_,ACC,O,_,_]
+    frame[3] = [_,_,O,ACC,_,_,_,_,_,_,_,_,ACC,O,_,_]
+    return frame
+  })(),
+  hat: (() => {
+    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
+    // Hat brim on row 1, crown on row 0
+    frame[0] = [_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_]
+    frame[1] = [_,_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_]
+    return frame
+  })(),
+  badge: (() => {
+    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
+    // Small badge on chest (rows 7-8, left side)
+    frame[7] = [_,_,_,_,_,ACC,ACC,_,_,_,_,_,_,_,_,_]
+    frame[8] = [_,_,_,_,_,ACC,ACC,_,_,_,_,_,_,_,_,_]
+    return frame
+  })(),
+  bowtie: (() => {
+    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
+    // Small bowtie just below chin (row 5-6 centre)
+    frame[5] = [_,_,_,_,_,O,ACC,O,O,ACC,O,_,_,_,_,_]
+    frame[6] = [_,_,_,_,_,_,O,ACC,ACC,O,_,_,_,_,_,_]
+    return frame
+  })(),
+  scarf: (() => {
+    const frame: SpriteFrame = Array(24).fill(null).map(() => Array(16).fill(null))
+    // Scarf wrap around neck rows 5-6
+    frame[5] = [_,_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_,_]
+    frame[6] = [_,_,_,O,ACC,ACC,ACC,ACC,ACC,ACC,ACC,ACC,O,_,_,_]
+    return frame
+  })(),
+}
+
+// Accessory colour map — override the 'acc' palette entry per accessory type
+const ACCESSORY_COLORS: Record<string, string | null> = {
+  none: null,
+  glasses: '#333340',
+  headphones: '#444455',
+  hat: null,   // uses shirt colour — caller must substitute
+  badge: '#ffd700',
+  bowtie: '#cc2244',
+  scarf: '#4466aa',
+}
+
+/** Resolve the 'acc' colour for a given accessory.
+ *  For hats, pass the shirt colour as the fallback so the hat matches the shirt. */
+export function resolveAccessoryColor(
+  accessory: string,
+  shirtColor?: string,
+): string {
+  if (accessory === 'hat' && shirtColor) return shirtColor
+  return ACCESSORY_COLORS[accessory] ?? '#ffd700'
+}
+
+// ---------------------------------------------------------------------------
+// High-level draw helper — applies hair style + accessory on top of base frame
+// ---------------------------------------------------------------------------
+
+/** Draw a sprite frame with optional hair style and accessory overlay applied */
+export function drawSpriteWithAppearance(
+  ctx: CanvasRenderingContext2D,
+  baseFrame: SpriteFrame,
+  palette: CharacterPalette,
+  hairStyle: string,
+  accessory: string,
+  offsetX = 0,
+  offsetY = 0,
+): void {
+  // Apply hair style modifier (returns a new frame; original is untouched)
+  const styleModifier = HAIR_STYLES[hairStyle] ?? HAIR_STYLES.short
+  const styledFrame = styleModifier(baseFrame)
+
+  // Draw the styled base
+  drawSpriteFrame(ctx, styledFrame, palette, offsetX, offsetY)
+
+  // Draw accessory overlay on top (if any)
+  const overlay = ACCESSORY_OVERLAYS[accessory]
+  if (overlay && overlay.length > 0) {
+    drawSpriteFrame(ctx, overlay, palette, offsetX, offsetY)
+  }
 }

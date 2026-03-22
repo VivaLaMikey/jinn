@@ -326,7 +326,7 @@ export const Room = memo(function Room({
           ${FLOOR_COLORS.tile_light}
         `,
         overflow: 'hidden',
-        minHeight: '140px',
+        minHeight: '120px',
       }}
     >
       {/* Wall trim at top */}

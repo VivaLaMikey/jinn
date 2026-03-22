@@ -37,6 +37,15 @@ export function scanOrg(): Map<string, Employee> {
               emoji: typeof data.emoji === "string" ? data.emoji : undefined,
               cliFlags: Array.isArray(data.cliFlags) ? data.cliFlags : undefined,
               effortLevel: typeof data.effortLevel === "string" ? data.effortLevel : undefined,
+              appearance: data.appearance ? {
+                skinTone: data.appearance.skinTone || '#ffdbb4',
+                hairColor: data.appearance.hairColor || '#4a3728',
+                hairStyle: data.appearance.hairStyle || 'short',
+                shirtColor: data.appearance.shirtColor || '#888888',
+                pantsColor: data.appearance.pantsColor || '#2e2e2e',
+                shoeColor: data.appearance.shoeColor || '#1a1a1a',
+                accessory: data.appearance.accessory || 'none',
+              } : undefined,
             };
             registry.set(employee.name, employee);
           }

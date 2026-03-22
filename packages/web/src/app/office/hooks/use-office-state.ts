@@ -5,6 +5,7 @@ import { useOrg } from '@/hooks/use-employees'
 import { useSessions } from '@/hooks/use-sessions'
 import { useGateway } from '@/hooks/use-gateway'
 import { api } from '@/lib/api'
+import type { EmployeeAppearance } from '@/lib/api'
 import { useQuery, useQueries } from '@tanstack/react-query'
 import { buildRoomsFromEmployees } from '../lib/office-layout'
 
@@ -19,6 +20,7 @@ export interface OfficeEmployee {
   sessionId: string | null
   rank?: string
   isManager: boolean
+  appearance?: EmployeeAppearance
 }
 
 export interface ActiveMeeting {
@@ -50,19 +52,21 @@ export function useOfficeState() {
     })),
   })
 
-  // Build a name→department map and name→rank map from the fetched detail results
-  const { deptMap, rankMap } = useMemo(() => {
+  // Build a name→department map, name→rank map, and name→appearance map from the fetched detail results
+  const { deptMap, rankMap, appearanceMap } = useMemo(() => {
     const dept = new Map<string, string>()
     const rank = new Map<string, string>()
+    const appearance = new Map<string, EmployeeAppearance>()
     for (const result of employeeDetailResults) {
       if (result.data) {
         const d = result.data as unknown as Record<string, unknown>
         const name = result.data.name
         dept.set(name, (d.department as string) ?? '')
         if (d.rank) rank.set(name, d.rank as string)
+        if (d.appearance) appearance.set(name, d.appearance as EmployeeAppearance)
       }
     }
-    return { deptMap: dept, rankMap: rank }
+    return { deptMap: dept, rankMap: rank, appearanceMap: appearance }
     // employeeDetailResults reference changes every render — track by org employees list
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employeeDetailResults.map((r) => r.dataUpdatedAt).join(',')])
@@ -165,10 +169,12 @@ export function useOfficeState() {
       const rank: string | undefined = rankMap.get(name)
       const isManager = rank === 'manager' || rank === 'senior'
 
-      return { name, displayName, department, status, taskSnippet, sessionId, rank, isManager }
+      const appearance = appearanceMap.get(name)
+
+      return { name, displayName, department, status, taskSnippet, sessionId, rank, isManager, appearance }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [org, sessions, meetings, version, deptMap, rankMap])
+  }, [org, sessions, meetings, version, deptMap, rankMap, appearanceMap])
 
   // Build department → employee names map (excludes 'coo' department)
   const departments = useMemo((): Map<string, string[]> => {

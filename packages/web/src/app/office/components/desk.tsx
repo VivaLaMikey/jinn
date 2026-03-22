@@ -17,6 +17,9 @@ interface DeskProps {
   onClick: (name: string) => void
 }
 
+// Desk surface width constant — used in multiple places
+const DESK_W = 64
+
 // Small pixel-art chair behind the desk
 function Chair({ deptColor }: { deptColor: string }) {
   return (
@@ -262,7 +265,7 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
           borderRadius: '4px',
           transition: 'background 0.15s, filter 0.15s',
           userSelect: 'none',
-          minWidth: '70px',
+          minWidth: '64px',
         }}
         className="desk-item hover:brightness-125"
       >
@@ -287,6 +290,7 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
             department={employee.department}
             status={employee.status}
             scale={3}
+            appearance={employee.appearance}
           />
         </div>
 
@@ -298,7 +302,7 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
         {/* Desk surface */}
         <div
           style={{
-            width: '72px',
+            width: `${DESK_W}px`,
             height: '18px',
             background: FURNITURE_COLORS.wood_med,
             borderRadius: '2px',
@@ -335,7 +339,7 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
         {/* Desk front edge (depth) */}
         <div
           style={{
-            width: '72px',
+            width: `${DESK_W}px`,
             height: '4px',
             background: FURNITURE_COLORS.wood_dark,
             borderRadius: '0 0 2px 2px',
@@ -352,7 +356,7 @@ export const Desk = memo(function Desk({ employee, onClick }: DeskProps) {
             color: 'var(--text-tertiary, #666)',
             textAlign: 'center',
             lineHeight: 1.1,
-            maxWidth: '72px',
+            maxWidth: `${DESK_W}px`,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
