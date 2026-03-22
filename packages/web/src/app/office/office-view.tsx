@@ -11,6 +11,7 @@ import { TaskAssigner } from './components/task-assigner'
 import { MeetingCreator } from './components/meeting-creator'
 import { StorePanel } from './components/store-panel'
 import { DecorationMode } from './components/decoration-mode'
+import { NoticeBoardPanel } from './components/notice-board-panel'
 import { api } from '@/lib/api'
 
 // Managers whose delegation triggers the COO walk animation
@@ -29,6 +30,7 @@ export default function OfficeView() {
   const [cooWalkTarget, setCooWalkTarget] = useState<string | null>(null)
   const [showStore, setShowStore] = useState(false)
   const [decorationMode, setDecorationMode] = useState(false)
+  const [showNoticeBoard, setShowNoticeBoard] = useState(false)
 
   const queryClient = useQueryClient()
 
@@ -144,6 +146,7 @@ export default function OfficeView() {
           storeItems={storeCatalog}
           decorationMode={decorationMode}
           onRoomClick={handleRoomClick}
+          onNoticeBoard={() => setShowNoticeBoard(true)}
         />
 
         {/* Employee detail panel */}
@@ -153,6 +156,11 @@ export default function OfficeView() {
             onClose={handleClosePanel}
             onAssignTask={handleAssignTask}
           />
+        )}
+
+        {/* Notice board panel */}
+        {showNoticeBoard && (
+          <NoticeBoardPanel onClose={() => setShowNoticeBoard(false)} />
         )}
 
         {/* Store panel */}

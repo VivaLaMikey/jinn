@@ -276,4 +276,5 @@ export const api = {
   getInventory: (name: string) => get<InventoryItem[]>(`/api/office/inventory/${name}`),
   creditCoins: (employee: string, amount: number) =>
     post<{ success: boolean; balance: number }>('/api/office/credit', { employee, amount }),
+  getGoals: () => get<any[]>('/goals'),
 };

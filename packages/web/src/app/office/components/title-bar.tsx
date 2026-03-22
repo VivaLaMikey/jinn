@@ -1,6 +1,7 @@
 'use client'
 
 import React, { memo, useEffect, useState } from 'react'
+import { TimeIndicator } from './day-night-overlay'
 
 interface TitleBarProps {
   connected: boolean
@@ -96,8 +97,9 @@ export const TitleBar = memo(function TitleBar({ connected }: TitleBarProps) {
           ))}
         </div>
 
-        {/* Right: connection status + clock */}
+        {/* Right: connection status + time indicator + clock */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <TimeIndicator />
           {/* Connection indicator */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             <div

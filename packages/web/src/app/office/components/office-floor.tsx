@@ -5,6 +5,7 @@ import { Room } from './room'
 import { CooOffice } from './coo-office'
 import { MeetingRoom } from './meeting-room'
 import { DustParticles } from './dust-particles'
+import { DayNightOverlay } from './day-night-overlay'
 import { buildRoomsFromEmployees } from '../lib/office-layout'
 import type { OfficeEmployee, ActiveMeeting } from '../hooks/use-office-state'
 import { FLOOR_COLORS } from '../lib/pixel-palette'
@@ -20,6 +21,7 @@ interface OfficeFloorProps {
   storeItems?: StoreItem[]
   decorationMode?: boolean
   onRoomClick?: (room: string, x: number, y: number) => void
+  onNoticeBoard?: () => void
 }
 
 // Polished water cooler
@@ -140,9 +142,10 @@ function WaterCooler() {
 }
 
 // Notice board on the hallway wall
-function NoticeBoard() {
+function NoticeBoard({ onClick }: { onClick?: () => void }) {
   return (
     <div
+      onClick={onClick}
       style={{
         position: 'absolute',
         left: '16px',
@@ -150,9 +153,10 @@ function NoticeBoard() {
         transform: 'translateY(-50%)',
         width: '28px',
         height: '20px',
-        pointerEvents: 'none',
+        pointerEvents: 'auto',
+        cursor: 'pointer',
       }}
-      aria-hidden
+      title='Notice Board'
     >
       {/* Frame */}
       <div
@@ -164,7 +168,10 @@ function NoticeBoard() {
           borderRadius: '2px',
           overflow: 'hidden',
           position: 'relative',
+          transition: 'filter 0.15s ease',
         }}
+        onMouseEnter={e => (e.currentTarget.style.filter = 'brightness(1.4)')}
+        onMouseLeave={e => (e.currentTarget.style.filter = 'brightness(1)')}
       >
         {/* Cork surface */}
         <div
@@ -196,6 +203,7 @@ export const OfficeFloor = memo(function OfficeFloor({
   storeItems,
   decorationMode,
   onRoomClick,
+  onNoticeBoard,
 }: OfficeFloorProps) {
   const jinnEmployee = employees.find((e) => e.name === 'jinn') || null
 
@@ -343,7 +351,7 @@ export const OfficeFloor = memo(function OfficeFloor({
           >
             CORRIDOR · FLOOR 1
           </span>
-          <NoticeBoard />
+          <NoticeBoard onClick={onNoticeBoard} />
           <WaterCooler />
         </div>
 
@@ -370,6 +378,8 @@ export const OfficeFloor = memo(function OfficeFloor({
 
       {/* Ambient dust particles overlay */}
       <DustParticles />
+      {/* Day/night atmosphere overlay */}
+      <DayNightOverlay />
     </div>
   )
 })
