@@ -1,6 +1,6 @@
 # 🧞 Jinn
 
-Lightweight AI gateway daemon orchestrating Claude Code and Codex.
+Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Gemini CLI.
 
 <p align="center">
   <img src="assets/jinn-showcase.gif" alt="Jinn Web Dashboard" width="800" />
@@ -8,16 +8,16 @@ Lightweight AI gateway daemon orchestrating Claude Code and Codex.
 
 ## What is Jinn?
 
-Jinn is an open-source AI gateway that wraps the Claude Code CLI and Codex SDK
-behind a unified daemon process. It routes tasks to AI engines, manages
-connectors like Slack, and schedules background work via cron. Jinn is a bus,
-not a brain.
+Jinn is an open-source AI gateway that wraps the Claude Code CLI, Codex SDK,
+and Gemini CLI behind a unified daemon process. It routes tasks to AI engines,
+manages connectors like Slack, and schedules background work via cron. Jinn is
+a bus, not a brain.
 
 ## 💡 Why Jinn?
 
 Most AI agent frameworks reinvent the wheel — custom tool-calling loops, brittle context management, hand-rolled retry logic. Then they charge you per API call on top.
 
-**Jinn takes a different approach.** It wraps battle-tested professional CLI tools (Claude Code, Codex) and adds only what they're missing: routing, scheduling, connectors, and an org system.
+**Jinn takes a different approach.** It wraps battle-tested professional CLI tools (Claude Code, Codex, Gemini CLI) and adds only what they're missing: routing, scheduling, connectors, and an org system.
 
 ### 🔑 Works with your Anthropic Max subscription
 
@@ -29,7 +29,7 @@ Other frameworks can't do this. Anthropic [banned third-party tools from using M
 
 | | Jinn | OpenClaw |
 |---|---|---|
-| **Architecture** | Wraps professional CLIs (Claude Code, Codex) | Custom agentic loop |
+| **Architecture** | Wraps professional CLIs (Claude Code, Codex, Gemini) | Custom agentic loop |
 | **Max subscription** | ✅ Works (uses official Claude Code CLI) | ❌ Banned since Jan 2026 |
 | **Typical cost** | $200/mo flat (Max) or pay-per-use | $300–750/mo API bills ([reported by users](https://www.reddit.com/r/OpenClaw/)) |
 | **Security** | Inherits Claude Code's security model | 512 vulnerabilities found by CrowdStrike |
@@ -47,7 +47,7 @@ When Claude Code gets better, Jinn gets better — automatically.
 
 ## ✨ Features
 
-- 🔌 **Dual engine support** — Claude Code CLI + Codex SDK
+- 🔌 **Triple engine support** — Claude Code CLI + Codex SDK + Gemini CLI
 - 💬 **Connectors** — Slack (threads + reactions), WhatsApp (QR auth), Discord (bot)
 - 📎 **File attachments** — drag & drop files into web chat, passed through to engines
 - 📱 **Mobile-responsive** — collapsible sidebar and mobile-friendly dashboard
@@ -64,6 +64,15 @@ When Claude Code gets better, Jinn gets better — automatically.
 
 ```bash
 npm install -g jinn-cli
+jinn setup
+jinn start
+```
+
+Or install via Homebrew:
+
+```bash
+brew tap hristo2612/jinn https://github.com/hristo2612/jinn
+brew install jinn
 jinn setup
 jinn start
 ```
@@ -86,7 +95,7 @@ Then open [http://localhost:7777](http://localhost:7777).
               |                 |  |                  |
       +-------v-------+ +------v------+  +-----------v---+
       |    Engines     | | Connectors  |  |    Web UI     |
-      | Claude | Codex | | Slack|WA|DC |  | localhost:7777|
+      |Claude|Codex|Gem| | Slack|WA|DC |  | localhost:7777|
       +----------------+ +-------------+  +---------------+
               |                 |
       +-------v-------+ +------v------+
@@ -96,8 +105,8 @@ Then open [http://localhost:7777](http://localhost:7777).
 ```
 
 The CLI sends commands to the gateway daemon. The daemon dispatches work to AI
-engines (Claude Code, Codex), manages connector integrations, runs scheduled
-cron jobs, and serves the web dashboard.
+engines (Claude Code, Codex, Gemini CLI), manages connector integrations, runs
+scheduled cron jobs, and serves the web dashboard.
 
 ## ⚙️ Configuration
 
@@ -149,19 +158,36 @@ jinn/
 git clone https://github.com/hristo2612/jinn.git
 cd jinn
 pnpm install
-pnpm build
-pnpm dev
+pnpm setup   # one-time: builds all packages and creates ~/.jinn
+pnpm dev     # starts gateway + Next.js dev server with hot reload
 ```
+
+Open [http://localhost:3000](http://localhost:3000) to use the web dashboard.
+
+`pnpm dev` starts two servers behind the scenes: the **gateway daemon** on
+`:7777` (API, WebSocket, connectors) and the **Next.js dev server** on `:3000`
+(web dashboard with hot reload). Next.js rewrites proxy `/api/*` and `/ws`
+requests from `:3000` to the gateway, so you only need to visit `:3000`. The
+gateway auto-restarts when you edit backend source files via Node's built-in
+`--watch` mode. To use a non-default gateway port, set `GATEWAY_PORT=<port>`
+before running `pnpm dev`.
+
+> **Prerequisites:** Node.js 22+, pnpm 10+, and the
+> [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`).
 
 ### Available Scripts
 
-| Command          | Description                     |
-| ---------------- | ------------------------------- |
-| `pnpm build`     | Build all packages              |
-| `pnpm dev`       | Start development mode          |
-| `pnpm typecheck` | Run TypeScript type checking    |
-| `pnpm lint`      | Lint all packages               |
-| `pnpm clean`     | Clean build artifacts           |
+| Command            | Description                                                         |
+| ------------------ | ------------------------------------------------------------------- |
+| `pnpm setup`       | Build all packages and initialize `~/.jinn` (one-time)              |
+| `pnpm dev`         | Start gateway (`:7777`) + Next.js dev server (`:3000`) with hot reload |
+| `pnpm start`       | Production-style clean build + start gateway on `:7777`             |
+| `pnpm stop`        | Stop the running gateway daemon                                     |
+| `pnpm status`      | Check if the gateway daemon is running                              |
+| `pnpm build`       | Build all packages                                                  |
+| `pnpm typecheck`   | Run TypeScript type checking                                        |
+| `pnpm lint`        | Lint all packages                                                   |
+| `pnpm clean`       | Clean build artifacts                                               |
 
 ## 🗺️ Roadmap
 
@@ -170,13 +196,13 @@ Jinn is under active development. Here's what's coming:
 ### 🔌 Connectors
 - [x] **Discord** — bot integration via discord.js
 - [x] **WhatsApp** — Baileys-based connector with QR auth and media support
-- [ ] **Telegram** — bot API connector
+- [x] **Telegram** — bot API connector with polling and user allowlist
 - [ ] **iMessage** — macOS-native via AppleScript bridge
 - [ ] **Email** — IMAP/SMTP connector for inbox monitoring and replies
 - [ ] **Webhooks** — generic inbound/outbound HTTP webhooks
 
 ### 🧠 Engines
-- [ ] **Gemini CLI** — Google's Gemini as a third engine option
+- [x] **Gemini CLI** — Google's Gemini as a third engine option
 - [ ] **Local models** — Ollama / llama.cpp integration for offline use
 - [ ] **Engine fallback chains** — auto-failover when primary engine is unavailable
 

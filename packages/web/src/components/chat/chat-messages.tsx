@@ -1,5 +1,5 @@
 "use client"
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { parseMedia } from '@/lib/conversations'
 import { FileAttachment } from './file-attachment'
@@ -85,18 +85,19 @@ function ToolGroup({ msgs, isActive }: { msgs: Message[]; isActive: boolean }) {
 
 function inlineFormat(text: string): React.ReactNode {
   const parts: React.ReactNode[] = []
-  // URLs, bold, inline code, italic — in priority order
-  const regex = /(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])|(\*\*(.+?)\*\*)|(`([^`]+)`)|\*([^*]+)\*/g
+  // Markdown links (any href), bare URLs, bold, inline code, italic — in priority order
+  const regex = /\[([^\]]+)\]\(([^)]+)\)|(https?:\/\/[^\s<]+[^\s<.,;:!?)}\]'"])|(\*\*(.+?)\*\*)|(`([^`]+)`)|\*([^*]+)\*/g
   let last = 0
   let match
 
   while ((match = regex.exec(text)) !== null) {
     if (match.index > last) parts.push(text.slice(last, match.index))
-    if (match[1]) {
+    if (match[1] && match[2]) {
+      // Markdown link: [text](url)
       parts.push(
         <a
           key={match.index}
-          href={match[1]}
+          href={match[2]}
           target="_blank"
           rel="noopener noreferrer"
           className="text-[var(--system-blue)] underline underline-offset-2"
@@ -104,14 +105,27 @@ function inlineFormat(text: string): React.ReactNode {
           {match[1]}
         </a>
       )
-    } else if (match[2]) {
-      parts.push(<strong key={match.index} className="font-[var(--weight-bold)]">{match[3]}</strong>)
-    } else if (match[4]) {
+    } else if (match[3]) {
+      // Bare URL
       parts.push(
-        <code key={match.index} className="bg-[var(--fill-secondary)] border border-[var(--separator)] rounded-[5px] py-px px-[5px] text-[0.88em] font-['SF_Mono',Menlo,monospace] text-[var(--accent)]">{match[5]}</code>
+        <a
+          key={match.index}
+          href={match[3]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[var(--system-blue)] underline underline-offset-2"
+        >
+          {match[3]}
+        </a>
       )
+    } else if (match[4]) {
+      parts.push(<strong key={match.index} className="font-[var(--weight-bold)]">{match[5]}</strong>)
     } else if (match[6]) {
-      parts.push(<em key={match.index} className="italic opacity-[0.85]">{match[6]}</em>)
+      parts.push(
+        <code key={match.index} className="bg-[var(--fill-secondary)] border border-[var(--separator)] rounded-[5px] py-px px-[5px] text-[0.88em] font-['SF_Mono',Menlo,monospace] text-[var(--accent)]">{match[7]}</code>
+      )
+    } else if (match[8]) {
+      parts.push(<em key={match.index} className="italic opacity-[0.85]">{match[8]}</em>)
     }
     last = match.index + match[0].length
   }
@@ -382,10 +396,58 @@ interface ChatMessagesProps {
 export function ChatMessages({ messages, loading, streamingText }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const prevMsgCount = useRef(0)
+  const contentRef = useRef<HTMLDivElement>(null)
   const prevMsgIdRef = useRef<string | null>(null)
+  const prevMsgCount = useRef(0)
+  const isAtBottomRef = useRef(true)
+  const [showScrollButton, setShowScrollButton] = useState(false)
+  const scrollButtonTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  // Use useLayoutEffect for instant scroll (before paint) to avoid flash
+  // IntersectionObserver: track whether the bottom sentinel is visible
+  useEffect(() => {
+    const sentinel = bottomRef.current
+    const container = scrollContainerRef.current
+    if (!sentinel || !container) return
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        isAtBottomRef.current = entry.isIntersecting
+        // Debounce the button visibility to avoid flicker during fast scrolling
+        clearTimeout(scrollButtonTimer.current)
+        scrollButtonTimer.current = setTimeout(() => {
+          setShowScrollButton(!entry.isIntersecting)
+        }, 100)
+      },
+      {
+        root: container,
+        rootMargin: '0px 0px 80px 0px', // "near bottom" zone
+        threshold: 0,
+      }
+    )
+
+    observer.observe(sentinel)
+    return () => {
+      observer.disconnect()
+      clearTimeout(scrollButtonTimer.current)
+    }
+  }, [])
+
+  // ResizeObserver: auto-scroll when content grows (new messages, streaming, image loads)
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content) return
+
+    const observer = new ResizeObserver(() => {
+      if (isAtBottomRef.current && bottomRef.current) {
+        bottomRef.current.scrollIntoView({ behavior: 'auto' })
+      }
+    })
+
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [])
+
+  // Session switch / initial load: snap to bottom instantly before paint
   useLayoutEffect(() => {
     if (messages.length === 0) {
       prevMsgCount.current = 0
@@ -398,25 +460,24 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
     const isInitialLoad = prevMsgCount.current === 0 && messages.length > 0
 
     if (isInitialLoad || isSessionSwitch) {
-      // Snap to bottom instantly before paint — no visible scroll
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
       }
-    } else {
-      // New messages arriving in same session — smooth scroll
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      isAtBottomRef.current = true
+      setShowScrollButton(false)
     }
 
     prevMsgCount.current = messages.length
     prevMsgIdRef.current = currentFirstId
   }, [messages])
 
-  // Also scroll on loading state changes (streaming starts)
-  useEffect(() => {
-    if (loading && messages.length > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  const scrollToBottom = useCallback(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
     }
-  }, [loading, messages.length])
+    isAtBottomRef.current = true
+    setShowScrollButton(false)
+  }, [])
 
   if (messages.length === 0 && !loading) {
     return (
@@ -434,7 +495,8 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
   }
 
   return (
-    <div ref={scrollContainerRef} className="chat-messages-scroll flex-1 overflow-y-auto overflow-x-hidden py-[var(--space-3)] pb-[var(--space-6)] bg-[var(--bg)] min-h-0">
+    <div ref={scrollContainerRef} className="chat-messages-scroll relative flex-1 overflow-y-auto overflow-x-hidden bg-[var(--bg)] min-h-0">
+      <div ref={contentRef} className="py-[var(--space-3)] pb-[var(--space-6)]">
       {groupMessages(messages).map((item) => {
         if (item.kind === 'tool-group') {
           const firstMsg = item.msgs[0]
@@ -562,6 +624,21 @@ export function ChatMessages({ messages, loading, streamingText }: ChatMessagesP
       )}
 
       <div ref={bottomRef} />
+      </div>
+
+      {/* Scroll-to-bottom button */}
+      {showScrollButton && (
+        <button
+          onClick={scrollToBottom}
+          aria-label="Scroll to bottom"
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 py-1.5 px-3 rounded-full bg-[var(--material-thick)] border border-[var(--separator)] text-[var(--text-secondary)] text-[length:var(--text-caption1)] shadow-[var(--shadow-elevated)] cursor-pointer transition-opacity duration-150 hover:bg-[var(--fill-secondary)]"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+          New messages
+        </button>
+      )}
 
       {/* Keyframe animations + responsive bubble widths */}
       <style>{`

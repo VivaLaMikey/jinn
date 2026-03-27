@@ -28,11 +28,31 @@ export interface Employee {
   model: string;
   persona: string;
   emoji?: string;
+  alwaysNotify?: boolean;
+  reportsTo?: string | string[];
+  parentName?: string | null;
+  directReports?: string[];
+  depth?: number;
+  chain?: string[];
+}
+
+export interface OrgWarning {
+  employee: string;
+  type: string;
+  message: string;
+  ref?: string;
+}
+
+export interface OrgHierarchy {
+  root: string | null;
+  sorted: string[];
+  warnings: OrgWarning[];
 }
 
 export interface OrgData {
   departments: string[];
-  employees: string[];
+  employees: Employee[];
+  hierarchy: OrgHierarchy;
 }
 
 
@@ -84,6 +104,16 @@ async function put<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json();
+}
+
 interface UploadedFile {
   id: string
   filename: string
@@ -96,7 +126,11 @@ export const api = {
   getSessions: () => get<Record<string, unknown>[]>("/api/sessions"),
   getSession: (id: string) => get<Record<string, unknown>>(`/api/sessions/${id}`),
   getSessionChildren: (id: string) => get<Record<string, unknown>[]>(`/api/sessions/${id}/children`),
+  updateSession: (id: string, data: { title?: string }) =>
+    put<Record<string, unknown>>(`/api/sessions/${id}`, data),
   deleteSession: (id: string) => del<Record<string, unknown>>(`/api/sessions/${id}`),
+  duplicateSession: (id: string) =>
+    post<Record<string, unknown>>(`/api/sessions/${id}/duplicate`, {}),
   bulkDeleteSessions: (ids: string[]) =>
     post<{ status: string; count: number }>("/api/sessions/bulk-delete", { ids }),
   createSession: (data: Record<string, unknown>) =>
@@ -117,11 +151,15 @@ export const api = {
     post<Record<string, unknown>>(`/api/cron/${id}/trigger`, {}),
   getOrg: () => get<OrgData>("/api/org"),
   getEmployee: (name: string) => get<Employee>(`/api/org/employees/${name}`),
+  updateEmployee: (name: string, data: { alwaysNotify?: boolean }) =>
+    patch<{ status: string }>(`/api/org/employees/${name}`, data),
   getDepartmentBoard: (name: string) =>
     get<Record<string, unknown>>(`/api/org/departments/${name}/board`),
   getSkills: () => get<Record<string, unknown>[]>("/api/skills"),
   getSkill: (name: string) => get<Record<string, unknown>>(`/api/skills/${name}`),
   getConfig: () => get<Record<string, unknown>>("/api/config"),
+  reloadConnectors: () =>
+    post<{ started: string[]; stopped: string[]; errors: string[] }>("/api/connectors/reload", {}),
   updateConfig: (data: Record<string, unknown>) =>
     put<Record<string, unknown>>("/api/config", data),
   getLogs: (n?: number) =>

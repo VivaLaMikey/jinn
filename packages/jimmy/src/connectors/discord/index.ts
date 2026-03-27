@@ -25,6 +25,10 @@ import { deriveSessionKey, buildReplyContext, isOldMessage } from "./threads.js"
 import { getFullCachedUsage } from "../../shared/usagePoller.js";
 
 export interface DiscordConnectorConfig {
+  /** Unique instance identifier (e.g. "discord-vox") */
+  id?: string;
+  /** Employee to handle messages from this connector instance */
+  employee?: string;
   botToken?: string;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
@@ -42,7 +46,8 @@ export interface DiscordConnectorConfig {
 }
 
 export class DiscordConnector implements Connector {
-  name = "discord";
+  name: string;
+  instanceId: string;
   private client: Client;
   private config: DiscordConnectorConfig;
   private handler: ((msg: IncomingMessage) => void) | null = null;
@@ -53,6 +58,8 @@ export class DiscordConnector implements Connector {
   private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(config: DiscordConnectorConfig) {
+    this.name = config.id || "discord";
+    this.instanceId = config.id || "discord";
     this.config = config;
     // Normalize Discord IDs to strings (YAML may parse large snowflake IDs as numbers)
     if (this.config.guildId) this.config.guildId = String(this.config.guildId);
@@ -93,6 +100,10 @@ export class DiscordConnector implements Connector {
 
   onMessage(handler: (msg: IncomingMessage) => void): void {
     this.handler = handler;
+  }
+
+  getEmployee(): string | undefined {
+    return this.config.employee;
   }
 
   async start(): Promise<void> {
@@ -427,7 +438,7 @@ export class DiscordConnector implements Connector {
 
     if (!this.handler) return;
 
-    const sessionKey = deriveSessionKey(message);
+    const sessionKey = deriveSessionKey(message, this.instanceId);
     const replyContext = buildReplyContext(message);
 
     // Download attachments
@@ -443,7 +454,7 @@ export class DiscordConnector implements Connector {
     ).then((results) => results.filter(Boolean) as Array<{ name: string; localPath: string; mimeType: string }>);
 
     const incomingMessage: IncomingMessage = {
-      connector: "discord",
+      connector: this.instanceId,
       source: "discord",
       sessionKey,
       channel: message.channel.id,

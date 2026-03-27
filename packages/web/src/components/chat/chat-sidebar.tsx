@@ -1,12 +1,12 @@
 "use client"
 
 import { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
-import { ChevronDown, Clock3, EllipsisVertical, Pin, Plus, Search, Trash2, X } from "lucide-react"
+import { ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
 import { api, type Employee } from "@/lib/api"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 import { useSettings } from "@/app/settings-provider"
 import { cleanPreview } from "@/lib/clean-preview"
-import { useSessions, useDeleteSession, useBulkDeleteSessions } from "@/hooks/use-sessions"
+import { useSessions, useUpdateSession, useDeleteSession, useBulkDeleteSessions, useDuplicateSession } from "@/hooks/use-sessions"
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -14,7 +14,22 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
 } from "@/components/ui/context-menu"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 
 interface Session {
@@ -33,13 +48,21 @@ interface Session {
   [key: string]: unknown
 }
 
+export interface SidebarOrder {
+  sessionIds: string[]
+  employeeNames: string[]
+  employeeSessionMap: Record<string, string[]>
+}
+
 interface ChatSidebarProps {
   selectedId: string | null
   onSelect: (id: string) => void
   onNewChat: () => void
   onDelete?: (id: string) => void
+  onDuplicate?: (newSessionId: string) => void
   onSessionsLoaded?: (sessions: Session[]) => void
   onEmployeeSessionsAvailable?: (sessions: Session[]) => void
+  onOrderComputed?: (order: SidebarOrder) => void
 }
 
 interface FlatItem {
@@ -217,8 +240,10 @@ export function ChatSidebar({
   onSelect,
   onNewChat,
   onDelete,
+  onDuplicate,
   onSessionsLoaded,
   onEmployeeSessionsAvailable,
+  onOrderComputed,
 }: ChatSidebarProps) {
   const { settings } = useSettings()
   const portalName = settings.portalName ?? "Jinn"
@@ -233,8 +258,10 @@ export function ChatSidebar({
   }
 
   const { data: rawSessions, isLoading: loading } = useSessions()
+  const updateSessionMutation = useUpdateSession()
   const deleteSessionMutation = useDeleteSession()
   const bulkDeleteMutation = useBulkDeleteSessions()
+  const duplicateSessionMutation = useDuplicateSession()
 
   const sessions = useMemo(() => {
     if (!rawSessions) return []
@@ -250,12 +277,20 @@ export function ChatSidebar({
   }, [rawSessions])
 
   const [search, setSearch] = useState("")
-  const [hoveredKey, setHoveredKey] = useState<string | null>(null)
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
+  const renameCancelledRef = useRef(false)
   const [readSessions, setReadSessions] = useState<Set<string>>(new Set())
   const [pinnedSessions, setPinnedSessions] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [fullyExpanded, setFullyExpanded] = useState<Record<string, boolean>>({})
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: "session" | "employee"
+    id: string
+    label: string
+    sessions?: Session[]
+  } | null>(null)
+  const deleteButtonRef = useRef<HTMLButtonElement>(null)
   const [employeeData, setEmployeeData] = useState<Map<string, Employee>>(new Map())
   const onSessionsLoadedRef = useRef(onSessionsLoaded)
 
@@ -291,16 +326,11 @@ export function ChatSidebar({
 
   // Fetch employee display names from org API
   useEffect(() => {
-    api.getOrg().then(async (org) => {
+    api.getOrg().then((org) => {
       const map = new Map<string, Employee>()
-      await Promise.all(
-        org.employees.map(async (name: string) => {
-          try {
-            const emp = await api.getEmployee(name)
-            map.set(name, emp)
-          } catch { /* skip */ }
-        }),
-      )
+      for (const emp of org.employees) {
+        map.set(emp.name, emp)
+      }
       setEmployeeData(map)
     }).catch(() => { /* best-effort */ })
   }, [])
@@ -367,6 +397,39 @@ export function ChatSidebar({
   }
 
   async function handleDelete(sessionId: string) {
+    // Compute next session to select before removing
+    let nextSelectId: string | null = null
+    if (selectedId === sessionId) {
+      // Build a flat ordered list of all visible session IDs
+      const allVisible: string[] = []
+      const addGroup = (items: FlatItem[]) => {
+        for (const item of items) {
+          const empName = item.employeeName!
+          const empSessions = item.sessions || []
+          // Always add the latest session (employee row click selects it)
+          if (empSessions.length === 1) {
+            allVisible.push(empSessions[0].id)
+          } else if (expanded[empName]) {
+            const visible = fullyExpanded[empName] ? empSessions : empSessions.slice(0, 5)
+            for (const s of visible) allVisible.push(s.id)
+          } else {
+            // Collapsed — only the latest session is reachable
+            if (empSessions.length > 0) allVisible.push(empSessions[0].id)
+          }
+        }
+      }
+      addGroup(pinnedFlat)
+      addGroup(unpinnedFlat)
+      for (const s of sortedCron) allVisible.push(s.id)
+
+      const idx = allVisible.indexOf(sessionId)
+      if (idx !== -1) {
+        // Prefer next item, then previous
+        if (idx + 1 < allVisible.length) nextSelectId = allVisible[idx + 1]
+        else if (idx - 1 >= 0) nextSelectId = allVisible[idx - 1]
+      }
+    }
+
     try {
       await deleteSessionMutation.mutateAsync(sessionId)
       setPinnedSessions((prev) => {
@@ -377,10 +440,30 @@ export function ChatSidebar({
         return next
       })
       startTransition(() => {
-        if (onDelete) onDelete(sessionId)
-        else if (selectedId === sessionId) onNewChat()
+        if (nextSelectId) {
+          onSelect(nextSelectId)
+        } else if (onDelete) {
+          onDelete(sessionId)
+        } else if (selectedId === sessionId) {
+          onNewChat()
+        }
       })
     } catch {}
+  }
+
+  async function handleDuplicate(sessionId: string) {
+    try {
+      const result = await duplicateSessionMutation.mutateAsync(sessionId) as { id?: string }
+      if (result?.id) {
+        onDuplicate?.(result.id)
+        onSelect(result.id)
+        // Auto-start rename on the new session
+        setRenamingSessionId(result.id)
+        renameCancelledRef.current = false
+      }
+    } catch (err: any) {
+      window.alert(`Duplicate failed: ${err.message || "Unknown error"}`)
+    }
   }
 
   const displayed = search.trim()
@@ -456,6 +539,31 @@ export function ChatSidebar({
   const cronCollapsed = collapsed.has("cron")
   const sortedCron = sortSessionsByActivity(cronSessions)
 
+  // Emit flat session order for keyboard navigation (J/K/E shortcuts)
+  const orderRef = useRef<string>('')
+  const allFlatIds = useMemo(() => {
+    const ids: string[] = []
+    const empNames: string[] = []
+    const empMap: Record<string, string[]> = {}
+    for (const item of [...pinnedFlat, ...unpinnedFlat]) {
+      const name = item.employeeName!
+      empNames.push(name)
+      const sessionIds = item.sessions!.map(s => s.id)
+      empMap[name] = sessionIds
+      ids.push(...sessionIds)
+    }
+    for (const s of sortedCron) ids.push(s.id)
+    return { sessionIds: ids, employeeNames: empNames, employeeSessionMap: empMap }
+  }, [pinnedFlat, unpinnedFlat, sortedCron])
+
+  useEffect(() => {
+    const key = allFlatIds.sessionIds.join(',')
+    if (key !== orderRef.current) {
+      orderRef.current = key
+      onOrderComputed?.(allFlatIds)
+    }
+  }, [allFlatIds, onOrderComputed])
+
   function isEmployeeActive(empSessions: Session[]): boolean {
     return empSessions.some((s) => s.id === selectedId)
   }
@@ -482,24 +590,24 @@ export function ChatSidebar({
     const sessionDotColor = getStatusDotColor(session, readSessions)
     const sessionIsRunning = session.status === "running"
     const sessionTitle = fixTitle(session.title, session.employee)
+    const displayTitle = cleanPreview(sessionTitle) || sessionTitle
     const sessionTime = formatTime(getSessionActivity(session))
     const isPinned = pinnedSessions.has(session.id)
-    const isHovered = hoveredKey === session.id
+    const isRenaming = renamingSessionId === session.id
+    const RowTag = isRenaming ? "div" : "button"
 
     return (
       <ContextMenu key={session.id}>
         <ContextMenuTrigger asChild>
-          <button
-            onClick={() => {
+          <RowTag
+            {...(!isRenaming && { onClick: () => {
               onSelect(session.id)
               onEmployeeSessionsAvailable?.(parentSessions ?? [session])
-            }}
-            onMouseEnter={() => setHoveredKey(session.id)}
-            onMouseLeave={() => { if (hoveredKey !== `menu:${session.id}`) setHoveredKey(null) }}
+            }})}
             className={cn(
-              "group relative flex w-full items-center gap-2.5 border-l-2 px-4 py-2 text-left transition-colors",
+              "group/session relative flex w-full items-center gap-2.5 border-l-2 px-4 py-2 text-left transition-colors",
               parentSessions
-                ? "pl-12"
+                ? "pl-11"
                 : "pl-6",
               sessionIsActive
                 ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
@@ -507,60 +615,93 @@ export function ChatSidebar({
             )}
           >
             <StatusDot color={sessionDotColor} pulse={sessionIsRunning} className="size-1.5" />
-            <span
-              className={cn(
-                "min-w-0 flex-1 truncate text-xs",
-                sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
-              )}
-            >
-              {cleanPreview(sessionTitle) || "Untitled"}
-            </span>
+            {isRenaming ? (
+              <input
+                autoFocus
+                maxLength={200}
+                defaultValue={displayTitle}
+                className={cn(
+                  "min-w-0 flex-1 truncate border-none bg-transparent text-xs outline-none ring-1 ring-[var(--accent)] rounded px-0.5",
+                  sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
+                )}
+                onFocus={(e) => e.target.select()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur()
+                  } else if (e.key === "Escape") {
+                    renameCancelledRef.current = true
+                    setRenamingSessionId(null)
+                  }
+                }}
+                onBlur={(e) => {
+                  if (renameCancelledRef.current) {
+                    renameCancelledRef.current = false
+                    return
+                  }
+                  const val = e.target.value.trim()
+                  if (val && val !== displayTitle) {
+                    updateSessionMutation.mutate({ id: session.id, data: { title: val } })
+                  }
+                  setRenamingSessionId(null)
+                }}
+              />
+            ) : (
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-xs",
+                  sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
+                )}
+              >
+                {cleanPreview(sessionTitle) || "Untitled"}
+              </span>
+            )}
             {isPinned ? (
-              <Pin className={cn("size-3 shrink-0 text-[var(--accent)]", isHovered && "hidden lg:hidden")} />
+              <Pin className="size-3 shrink-0 text-[var(--accent)] group-hover/session:lg:hidden group-has-[[data-state=open]]/session:lg:hidden" />
             ) : null}
             {/* Date on default, ... on hover (desktop only) */}
-            <span className={cn("shrink-0 text-[10px] text-[var(--text-quaternary)]", isHovered && "lg:hidden")}>{sessionTime}</span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setHoveredKey(`menu:${session.id}`)
-              }}
-              className={cn(
-                "hidden shrink-0 text-muted-foreground transition-colors hover:text-foreground",
-                isHovered && "lg:block"
-              )}
-            >
-              <EllipsisVertical className="size-3.5" />
-            </button>
-            {hoveredKey === `menu:${session.id}` ? (
-              <div
-                className="absolute right-2 top-full z-50 min-w-[140px] overflow-hidden rounded-lg border border-border bg-[var(--material-thick)] py-1 shadow-[var(--shadow-overlay)] backdrop-blur-xl"
-                onMouseLeave={() => setHoveredKey(null)}
-              >
+            <span className="shrink-0 text-[10px] text-[var(--text-quaternary)] group-hover/session:lg:hidden group-has-[[data-state=open]]/session:lg:hidden">{sessionTime}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
                 <button
-                  onClick={(e) => { e.stopPropagation(); togglePin(session.id); setHoveredKey(null) }}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
+                  onClick={(e) => e.stopPropagation()}
+                  className="hidden shrink-0 text-muted-foreground transition-colors hover:text-foreground group-hover/session:lg:block group-has-[[data-state=open]]/session:lg:block"
                 >
-                  <Pin className="size-3" /> {isPinned ? "Unpin" : "Pin"}
+                  <EllipsisVertical className="size-3.5" />
                 </button>
-                <div className="my-0.5 border-t border-border" />
-                <button
-                  onClick={(e) => { e.stopPropagation(); setHoveredKey(null); if (window.confirm('Delete this session?')) handleDelete(session.id) }}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--system-red)] transition-colors hover:bg-accent"
-                >
-                  <Trash2 className="size-3" /> Delete
-                </button>
-              </div>
-            ) : null}
-          </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => { renameCancelledRef.current = false; setRenamingSessionId(session.id) }}>
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => togglePin(session.id)}>
+                  {isPinned ? "Unpin" : "Pin"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleDuplicate(session.id)}>
+                  Duplicate...
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onClick={() => setDeleteTarget({ type: "session", id: session.id, label: cleanPreview(sessionTitle) || "Untitled" })}>
+                  Delete session
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </RowTag>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem onClick={() => { renameCancelledRef.current = false; setRenamingSessionId(session.id) }}>
+            Rename
+          </ContextMenuItem>
           <ContextMenuItem onClick={() => togglePin(session.id)}>
             {isPinned ? "Unpin" : "Pin"}
           </ContextMenuItem>
+          <ContextMenuItem onClick={() => handleDuplicate(session.id)}>
+            Duplicate...
+          </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem variant="destructive" onClick={() => { if (window.confirm('Delete this session?')) handleDelete(session.id) }}>
-            Delete session
+          <ContextMenuItem variant="destructive" onClick={() => setDeleteTarget({ type: "session", id: session.id, label: cleanPreview(sessionTitle) || "Untitled" })}>
+            <span className="flex-1">Delete session</span>
+            <kbd className="ml-auto pl-3 font-mono text-[10px] text-[var(--text-quaternary)]">⌫</kbd>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -579,7 +720,6 @@ export function ChatSidebar({
     const pulse = latestSession.status === "running"
     const isActive = isEmployeeActive(empSessions)
     const isPinned = pinnedSessions.has(item.pinKey)
-    const isHovered = hoveredKey === item.pinKey
     const sessionCount = empSessions.length
     const isExpanded = expanded[empName] || false
     const hasUnread = empSessions.some(
@@ -592,10 +732,8 @@ export function ChatSidebar({
           <ContextMenuTrigger asChild>
             <button
               onClick={() => handleEmployeeClick(item)}
-              onMouseEnter={() => setHoveredKey(item.pinKey)}
-              onMouseLeave={() => { if (hoveredKey !== `menu:${item.pinKey}`) setHoveredKey(null) }}
               className={cn(
-                "group relative flex w-full items-center gap-3 border-l-2 px-4 py-3 text-left transition-colors",
+                "group/emp relative flex w-full items-center gap-3 border-l-2 px-4 py-3 text-left transition-colors",
                 isActive
                   ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
                   : "border-l-transparent hover:bg-accent"
@@ -606,7 +744,7 @@ export function ChatSidebar({
                 <StatusDot
                   color={dotColor}
                   pulse={pulse}
-                  className="absolute -bottom-0.5 -right-0.5 size-2.5 border-2 border-[var(--sidebar-bg)]"
+                  className="absolute -bottom-0.5 -right-0 size-2.5 border-2 border-[var(--sidebar-bg)]"
                 />
               </div>
 
@@ -621,19 +759,29 @@ export function ChatSidebar({
                     {displayName}
                   </span>
                   {/* Date on default, ... on hover (desktop only) */}
-                  <span className={cn("shrink-0 text-[10px] text-[var(--text-tertiary)]", isHovered && "lg:hidden")}>{timeLabel}</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setHoveredKey(`menu:${item.pinKey}`)
-                    }}
-                    className={cn(
-                      "hidden shrink-0 text-muted-foreground transition-colors hover:text-foreground",
-                      isHovered && "lg:block"
-                    )}
-                  >
-                    <EllipsisVertical className="size-3.5" />
-                  </button>
+                  <span className="shrink-0 text-[10px] text-[var(--text-tertiary)] group-hover/emp:lg:hidden group-has-[[data-state=open]]/emp:lg:hidden">{timeLabel}</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        onClick={(e) => e.stopPropagation()}
+                        className="hidden shrink-0 text-muted-foreground transition-colors hover:text-foreground group-hover/emp:lg:block group-has-[[data-state=open]]/emp:lg:block"
+                      >
+                        <EllipsisVertical className="size-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => togglePin(item.pinKey)}>
+                        {isPinned ? "Unpin" : "Pin"}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleMarkAllRead(empSessions)}>
+                        Mark all as read
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem variant="destructive" onClick={() => setDeleteTarget({ type: "employee", id: empName, label: displayName, sessions: empSessions })}>
+                        Delete all chats
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
                 <div className="flex items-center gap-1.5 overflow-hidden text-[11px] text-[var(--text-tertiary)]">
                   {department ? <span className="truncate">{department}</span> : null}
@@ -647,37 +795,6 @@ export function ChatSidebar({
                   ) : null}
                 </div>
               </div>
-
-              {hoveredKey === `menu:${item.pinKey}` ? (
-                <div
-                  className="absolute right-2 top-full z-50 min-w-[160px] overflow-hidden rounded-lg border border-border bg-[var(--material-thick)] py-1 shadow-[var(--shadow-overlay)] backdrop-blur-xl"
-                  onMouseLeave={() => setHoveredKey(null)}
-                >
-                  <button
-                    onClick={(e) => { e.stopPropagation(); togglePin(item.pinKey); setHoveredKey(null) }}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
-                  >
-                    <Pin className="size-3" /> {isPinned ? "Unpin" : "Pin"}
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleMarkAllRead(empSessions); setHoveredKey(null) }}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
-                  >
-                    Mark all as read
-                  </button>
-                  <div className="my-0.5 border-t border-border" />
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setHoveredKey(null)
-                      if (window.confirm(`Delete all ${empSessions.length} chats with "${displayName}"?`)) handleDeleteEmployee(empName, empSessions)
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--system-red)] transition-colors hover:bg-accent"
-                  >
-                    <Trash2 className="size-3" /> Delete all chats
-                  </button>
-                </div>
-              ) : null}
             </button>
           </ContextMenuTrigger>
           <ContextMenuContent>
@@ -686,6 +803,10 @@ export function ChatSidebar({
             </ContextMenuItem>
             <ContextMenuItem onClick={() => handleMarkAllRead(empSessions)}>
               Mark all as read
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" onClick={() => setDeleteTarget({ type: "employee", id: empName, label: displayName, sessions: empSessions })}>
+              Delete all chats
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
@@ -698,7 +819,7 @@ export function ChatSidebar({
         {isExpanded && sessionCount > 5 && !fullyExpanded[empName] ? (
           <button
             onClick={() => setFullyExpanded((prev) => ({ ...prev, [empName]: true }))}
-            className="w-full cursor-pointer px-4 pb-2 pl-12 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
+            className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
           >
             +{sessionCount - 5} more
           </button>
@@ -713,10 +834,10 @@ export function ChatSidebar({
         <div className="mb-2 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold tracking-[-0.03em] text-foreground">Chats</h2>
-            <p className="text-xs text-muted-foreground">Sessions, employees, and cron runs</p>
+            <p className="text-xs text-muted-foreground">All conversations</p>
           </div>
           <div className="flex items-center gap-1.5">
-            <Button size="sm" className="gap-1.5" onClick={onNewChat}>
+            <Button size="sm" className="gap-1.5" onClick={onNewChat} title="New chat (N)">
               <Plus className="size-3.5" />
               New
             </Button>
@@ -726,10 +847,11 @@ export function ChatSidebar({
         <div className="flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] px-3 py-2">
           <Search className="size-3.5 shrink-0 text-[var(--text-tertiary)]" />
           <input
+            id="chat-search"
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search chats..."
+            placeholder="Search..."
             aria-label="Search chats"
             className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-[var(--text-tertiary)]"
           />
@@ -745,7 +867,7 @@ export function ChatSidebar({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="px-4 py-8 text-center text-xs text-[var(--text-quaternary)]">
             Loading sessions...
@@ -763,8 +885,6 @@ export function ChatSidebar({
               <div className={cn("mt-2", pinnedFlat.length === 0 && unpinnedFlat.length === 0 && "mt-0")}>
                 <button
                   onClick={toggleCronCollapsed}
-                  onMouseEnter={() => setHoveredKey("cron-header")}
-                  onMouseLeave={() => setHoveredKey(null)}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
                 >
                   <Clock3 className="size-3.5 text-muted-foreground" />
@@ -782,6 +902,41 @@ export function ChatSidebar({
           </>
         )}
       </div>
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+        <DialogContent showCloseButton={false} className="max-w-sm" onOpenAutoFocus={(e) => { e.preventDefault(); deleteButtonRef.current?.focus() }}>
+          <DialogHeader>
+            <DialogTitle>
+              {deleteTarget?.type === "employee"
+                ? `Delete all chats with "${deleteTarget.label}"?`
+                : `Delete "${deleteTarget?.label}"?`}
+            </DialogTitle>
+            <DialogDescription>
+              {deleteTarget?.type === "employee"
+                ? `This will permanently delete ${deleteTarget.sessions?.length ?? 0} session(s) and all their messages. This cannot be undone.`
+                : "This will permanently delete the session and all its messages. This cannot be undone."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button
+              ref={deleteButtonRef}
+              variant="destructive"
+              onClick={() => {
+                if (!deleteTarget) return
+                if (deleteTarget.type === "employee" && deleteTarget.sessions) {
+                  handleDeleteEmployee(deleteTarget.id, deleteTarget.sessions)
+                } else {
+                  handleDelete(deleteTarget.id)
+                }
+                setDeleteTarget(null)
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <style jsx>{`
         @keyframes sidebar-pulse {

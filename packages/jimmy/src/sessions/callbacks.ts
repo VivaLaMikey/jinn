@@ -15,8 +15,10 @@ import type { Session, JinnConfig } from "../shared/types.js";
 export function notifyParentSession(
   childSession: Session,
   result: { result?: string | null; error?: string | null; cost?: number; durationMs?: number },
+  options?: { alwaysNotify?: boolean },
 ): void {
   if (!childSession.parentSessionId) return;
+  if (options?.alwaysNotify === false) return;
 
   // Synchronously increment the child completion counter on the parent session.
   // This is a quick DB op and must complete before the async notification fires

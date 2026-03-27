@@ -44,6 +44,10 @@ interface ChatInputProps {
   droppedFiles?: File[]
   /** Called after droppedFiles have been consumed as pending attachments */
   onDroppedFilesConsumed?: () => void
+  /** Incrementing counter that triggers textarea focus when changed */
+  focusTrigger?: number
+  /** Callback to open keyboard shortcuts overlay */
+  onShortcutsClick?: () => void
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -114,6 +118,8 @@ export function ChatInput({
   events,
   droppedFiles,
   onDroppedFilesConsumed,
+  focusTrigger,
+  onShortcutsClick,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -127,6 +133,13 @@ export function ChatInput({
   const [pendingAttachments, setPendingAttachments] = useState<MediaAttachment[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Focus textarea when focusTrigger changes (e.g. "+ New" chat button clicked)
+  useEffect(() => {
+    if (focusTrigger && focusTrigger > 0) {
+      textareaRef.current?.focus()
+    }
+  }, [focusTrigger])
   const mentionItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
 
   const stt = useStt(events, (text) => {
@@ -157,20 +170,15 @@ export function ChatInput({
   useEffect(() => {
     api
       .getOrg()
-      .then(async (data) => {
-        const emps = data.employees
-        if (!Array.isArray(emps)) return
-        const details = await Promise.all(
-          emps.map(async (name: string) => {
-            try {
-              const emp = await api.getEmployee(name)
-              return { name: emp.name, displayName: emp.displayName, department: emp.department, rank: emp.rank, engine: emp.engine }
-            } catch {
-              return { name }
-            }
-          })
-        )
-        setEmployees(details)
+      .then((data) => {
+        if (!Array.isArray(data.employees)) return
+        setEmployees(data.employees.map((emp) => ({
+          name: emp.name,
+          displayName: emp.displayName,
+          department: emp.department,
+          rank: emp.rank,
+          engine: emp.engine,
+        })))
       })
       .catch(() => {})
   }, [])
@@ -403,11 +411,11 @@ export function ChatInput({
   }
 
   const filteredCommands = slashCommands.filter((c) =>
-    c.name.toLowerCase().startsWith(commandFilter)
+    c.name?.toLowerCase().startsWith(commandFilter)
   )
 
   const filteredEmployees = employees.filter((e) =>
-    e.name.toLowerCase().includes(mentionFilter)
+    e.name?.toLowerCase().includes(mentionFilter)
   )
 
   const hasContent = value.trim().length > 0 || pendingAttachments.length > 0
@@ -505,6 +513,7 @@ export function ChatInput({
 
         {/* Textarea */}
         <textarea
+          id="chat-textarea"
           ref={textareaRef}
           value={value}
           onChange={handleChange}
@@ -604,6 +613,15 @@ export function ChatInput({
         <span>Enter to send</span>
         <span>/ - commands</span>
         <span>@name - mention</span>
+        {onShortcutsClick && (
+          <button
+            onClick={onShortcutsClick}
+            className="flex items-center gap-1 text-[length:var(--text-caption2)] text-[var(--text-quaternary)] hover:text-[var(--text-tertiary)] transition-colors bg-transparent border-none cursor-pointer p-0 font-[inherit]"
+          >
+            <kbd className="rounded bg-[var(--fill-tertiary)] px-1 py-0.5 font-mono text-[10px] leading-none">?</kbd>
+            <span>shortcuts</span>
+          </button>
+        )}
       </div>
 
       {/* STT error banner */}

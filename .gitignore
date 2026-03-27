@@ -6,3 +6,5 @@ dist/
 .env
 .env.local
 .worktrees/
+dist.bak*/
+package-lock.json

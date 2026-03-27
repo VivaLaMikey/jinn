@@ -355,6 +355,13 @@ export class SessionManager {
     // Resolve MCP config before try block so it's accessible in catch for cleanup
     let mcpConfigPath: string | undefined;
 
+    let hierarchy: import("../shared/types.js").OrgHierarchy | undefined;
+    try {
+      const { scanOrg } = await import("../gateway/org.js");
+      const { resolveOrgHierarchy } = await import("../gateway/org-hierarchy.js");
+      hierarchy = resolveOrgHierarchy(scanOrg());
+    } catch { /* fallback to filesystem scan in context builder */ }
+
     try {
       const systemPrompt = buildContext({
         source: session.source,
@@ -366,11 +373,14 @@ export class SessionManager {
         config: this.config,
         sessionId: session.id,
         channelName: (msg.transportMeta?.channelName as string) || undefined,
+        hierarchy,
       });
 
       const engineConfig = session.engine === "codex"
         ? this.config.engines.codex
-        : this.config.engines.claude;
+        : session.engine === "gemini"
+          ? this.config.engines.gemini ?? this.config.engines.claude
+          : this.config.engines.claude;
       if (session.engine === "claude") {
         const mcpConfig = resolveMcpServers(this.config.mcp, employee);
         if (Object.keys(mcpConfig.mcpServers).length > 0) {
@@ -584,7 +594,7 @@ export class SessionManager {
               lastError: fallbackResult.error ?? null,
             });
             if (updated) {
-              notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs });
+              notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
             return;
           }
@@ -773,7 +783,7 @@ export class SessionManager {
               notifyDiscordChannel(
                 `✅ Claude usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
               );
-              notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+              notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
             logger.info(`Session ${session.id} resumed after usage reset`);
             return;
@@ -835,7 +845,7 @@ export class SessionManager {
         lastError: wasInterrupted ? null : (result.error ?? null),
       });
       if (updatedSession) {
-        notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs });
+        notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
         // For top-level (COO) sessions: check auto-compact thresholds after each completed turn
         if (!updatedSession.parentSessionId) {
           maybeAutoCompact(updatedSession, this.config);
@@ -856,7 +866,7 @@ export class SessionManager {
         lastError: errMsg,
       });
       if (erroredSession) {
-        notifyParentSession(erroredSession, { error: errMsg });
+        notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
       }
 
       // Clear typing indicator on error
@@ -909,7 +919,7 @@ export class SessionManager {
         `Session: ${session.id}`,
         `Engine: ${session.engine}`,
         `Connector: ${session.connector || session.source}`,
-        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex"]?.model || "default"}`,
+        `Model: ${session.model || this.config.engines[session.engine as "claude" | "codex" | "gemini"]?.model || "default"}`,
         `State: ${transportState}`,
         `Queue depth: ${queueDepth}`,
         `Created: ${session.createdAt}`,
@@ -954,6 +964,7 @@ export class SessionManager {
         `Default engine: ${this.config.engines.default}`,
         `Claude: ${this.config.engines.claude.model}`,
         `Codex: ${this.config.engines.codex.model}`,
+        ...(this.config.engines.gemini ? [`Gemini: ${this.config.engines.gemini.model}`] : []),
         "Connectors:",
         ...connectorLines,
       ].join("\n");

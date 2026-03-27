@@ -14,8 +14,10 @@ import {
   getSession,
   createSession,
   updateSession,
+  UpdateSessionFields,
   deleteSession,
   deleteSessions,
+  duplicateSession,
   insertMessage,
   getMessages,
   deleteMessages,
@@ -28,6 +30,7 @@ import {
   getFile,
 } from "../sessions/registry.js";
 import { compactMessages } from "../sessions/compact.js";
+import { forkEngineSession } from "../sessions/fork.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -137,6 +140,7 @@ export interface ApiContext {
   emit: (event: string, payload: unknown) => void;
   connectors: Map<string, import("../shared/types.js").Connector>;
   usageMonitor?: UsageMonitor;
+  reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
 }
 
 export function resumePendingWebQueueItems(context: ApiContext): void {
@@ -345,12 +349,33 @@ function computePacing(utilization: number, resetsAt: string | null, windowMinut
   return { pacingExceeded, elapsedMinutes, remainingMinutes, expectedUtilization };
 }
 
+const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken"]);
+
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
   for (const key of Object.keys(source)) {
     const sv = source[key];
     const tv = target[key];
-    if (sv && typeof sv === "object" && !Array.isArray(sv) && tv && typeof tv === "object" && !Array.isArray(tv)) {
+    // Skip sanitized secret placeholders — keep original value
+    if (SANITIZED_KEYS.has(key) && sv === "***") continue;
+    if (Array.isArray(sv)) {
+      // For arrays (e.g. instances), preserve secrets from matching items
+      if (Array.isArray(tv)) {
+        result[key] = sv.map((item: unknown) => {
+          if (item && typeof item === "object" && !Array.isArray(item)) {
+            const srcItem = item as Record<string, unknown>;
+            // Find matching target item by id
+            const matchTarget = (tv as unknown[]).find(
+              (t) => t && typeof t === "object" && (t as Record<string, unknown>).id === srcItem.id
+            ) as Record<string, unknown> | undefined;
+            if (matchTarget) return deepMerge(matchTarget, srcItem);
+          }
+          return item;
+        });
+      } else {
+        result[key] = sv;
+      }
+    } else if (sv && typeof sv === "object" && !Array.isArray(sv) && tv && typeof tv === "object" && !Array.isArray(tv)) {
       result[key] = deepMerge(tv as Record<string, unknown>, sv as Record<string, unknown>);
     } else {
       result[key] = sv;
@@ -472,6 +497,7 @@ export async function handleApiRequest(
           default: config.engines.default,
           claude: { model: config.engines.claude.model, available: true },
           codex: { model: config.engines.codex.model, available: true },
+          ...(config.engines.gemini ? { gemini: { model: config.engines.gemini.model, available: true } } : {}),
           modelCap: config.engines.modelCap,
         },
         sessions: { total: sessions.length, running, active: running },
@@ -584,6 +610,29 @@ export async function handleApiRequest(
       return json(res, { ...serializeSession(session, context), messages });
     }
 
+    // PUT /api/sessions/:id
+    params = matchRoute("/api/sessions/:id", pathname);
+    if (method === "PUT" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      const updates: UpdateSessionFields = {};
+      if (body.title !== undefined) {
+        if (typeof body.title !== "string") return badRequest(res, "title must be a string");
+        const trimmed = body.title.trim();
+        if (!trimmed) return badRequest(res, "title must not be empty");
+        updates.title = trimmed.slice(0, 200);
+      }
+      if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
+      const updated = updateSession(params.id, updates);
+      if (!updated) return notFound(res);
+      context.emit("session:updated", { sessionId: params.id });
+      return json(res, serializeSession(updated, context));
+    }
+
     // DELETE /api/sessions/:id
     params = matchRoute("/api/sessions/:id", pathname);
     if (method === "DELETE" && params) {
@@ -693,6 +742,45 @@ export async function handleApiRequest(
         compactedCount: result.compactedCount,
         summary: result.summary,
       });
+    }
+
+    // POST /api/sessions/:id/duplicate — duplicate a session (snapshot fork)
+    params = matchRoute("/api/sessions/:id/duplicate", pathname);
+    if (method === "POST" && params) {
+      const source = getSession(params.id);
+      if (!source) return notFound(res);
+      if (!source.engineSessionId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Session has no engine session ID — cannot duplicate" }));
+        return;
+      }
+
+      let newSessionId: string | null = null;
+      try {
+        // 1. Duplicate session + messages in the registry
+        const { session: newSession, messageCount } = duplicateSession(params.id);
+        newSessionId = newSession.id;
+
+        // 2. Fork the engine session (Claude/Codex/Gemini)
+        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME);
+
+        // 3. Store the new engine session ID
+        updateSession(newSession.id, { engineSessionId: forkResult.engineSessionId });
+
+        const result = getSession(newSession.id)!;
+        logger.info(`Session duplicated: ${params.id} → ${newSession.id} (engine: ${forkResult.engineSessionId}, ${messageCount} messages)`);
+        context.emit("session:created", { sessionId: newSession.id });
+        return json(res, serializeSession(result, context));
+      } catch (err: any) {
+        // Clean up orphaned session if the engine fork failed after DB insert
+        if (newSessionId) {
+          try { deleteSession(newSessionId); } catch { /* best effort */ }
+        }
+        logger.error(`Failed to duplicate session ${params.id}: ${err.message}`);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Duplicate failed: ${err.message}` }));
+        return;
+      }
     }
 
     // DELETE /api/sessions/:id/queue/:itemId — cancel specific item
@@ -1096,7 +1184,7 @@ export async function handleApiRequest(
       if (!text) return badRequest(res, "text is required");
       const role: string = typeof body.role === "string" ? body.role : "notification";
       insertMessage(session.id, role, text);
-      context.emit("session:notification", { sessionId: session.id, text, role });
+      context.emit("session:notification", { sessionId: session.id, message: text, role });
       return json(res, { ok: true });
     }
 
@@ -1210,39 +1298,39 @@ export async function handleApiRequest(
 
     // GET /api/org
     if (method === "GET" && pathname === "/api/org") {
-      if (!fs.existsSync(ORG_DIR)) return json(res, { departments: [], employees: [] });
+      if (!fs.existsSync(ORG_DIR)) return json(res, { departments: [], employees: [], hierarchy: { root: null, sorted: [], warnings: [] } });
       const entries = fs.readdirSync(ORG_DIR, { withFileTypes: true });
       const departments = entries
         .filter((e) => e.isDirectory())
         .map((e) => e.name);
-      const employees: string[] = [];
-      // Scan root-level YAML files
-      for (const e of entries) {
-        if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml"))) {
-          employees.push(e.name.replace(/\.ya?ml$/, ""));
-        }
-      }
-      // Scan employees/ subdirectory
-      const employeesDir = path.join(ORG_DIR, "employees");
-      if (fs.existsSync(employeesDir)) {
-        const empEntries = fs.readdirSync(employeesDir, { withFileTypes: true });
-        for (const e of empEntries) {
-          if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml"))) {
-            employees.push(e.name.replace(/\.ya?ml$/, ""));
-          }
-        }
-      }
-      // Scan inside each department directory for YAML files (excluding department.yaml)
-      for (const dept of departments) {
-        const deptDir = path.join(ORG_DIR, dept);
-        const deptEntries = fs.readdirSync(deptDir, { withFileTypes: true });
-        for (const e of deptEntries) {
-          if (e.isFile() && (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) && e.name !== "department.yaml") {
-            employees.push(e.name.replace(/\.ya?ml$/, ""));
-          }
-        }
-      }
-      return json(res, { departments, employees });
+
+      const { scanOrg } = await import("./org.js");
+      const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
+      const orgRegistry = scanOrg();
+      const hierarchy = resolveOrgHierarchy(orgRegistry);
+
+      const employees = hierarchy.sorted.map((name) => {
+        const node = hierarchy.nodes[name];
+        const emp = node.employee;
+        const { persona, ...rest } = emp;
+        return {
+          ...rest,
+          parentName: node.parentName,
+          directReports: node.directReports,
+          depth: node.depth,
+          chain: node.chain,
+        };
+      });
+
+      return json(res, {
+        departments,
+        employees,
+        hierarchy: {
+          root: hierarchy.root,
+          sorted: hierarchy.sorted,
+          warnings: hierarchy.warnings,
+        },
+      });
     }
 
     // GET /api/org/pips — list all active PIPs
@@ -1342,24 +1430,126 @@ export async function handleApiRequest(
     // GET /api/org/employees/:name
     params = matchRoute("/api/org/employees/:name", pathname);
     if (method === "GET" && params) {
-      const candidates = [
-        path.join(ORG_DIR, "employees", `${params.name}.yaml`),
-        path.join(ORG_DIR, "employees", `${params.name}.yml`),
-        path.join(ORG_DIR, `${params.name}.yaml`),
-        path.join(ORG_DIR, `${params.name}.yml`),
-      ];
-      // Also search inside each department directory
-      if (fs.existsSync(ORG_DIR)) {
-        const dirs = fs.readdirSync(ORG_DIR, { withFileTypes: true }).filter((e) => e.isDirectory());
-        for (const dir of dirs) {
-          candidates.push(path.join(ORG_DIR, dir.name, `${params.name}.yaml`));
-          candidates.push(path.join(ORG_DIR, dir.name, `${params.name}.yml`));
-        }
+      const { scanOrg } = await import("./org.js");
+      const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
+      const orgRegistry = scanOrg();
+      const emp = orgRegistry.get(params.name);
+      if (!emp) return notFound(res);
+
+      const hierarchy = resolveOrgHierarchy(orgRegistry);
+      const node = hierarchy.nodes[params.name];
+
+      return json(res, {
+        ...emp,
+        parentName: node?.parentName ?? null,
+        directReports: node?.directReports ?? [],
+        depth: node?.depth ?? 0,
+        chain: node?.chain ?? [params.name],
+      });
+    }
+
+    // PATCH /api/org/employees/:name — update employee fields (currently only alwaysNotify)
+    params = matchRoute("/api/org/employees/:name", pathname);
+    if (method === "PATCH" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as any;
+      const { updateEmployeeYaml } = await import("./org.js");
+      const updated = updateEmployeeYaml(params.name, {
+        alwaysNotify: typeof body.alwaysNotify === "boolean" ? body.alwaysNotify : undefined,
+      });
+      if (!updated) return notFound(res);
+      context.emit("org:updated", { employee: params.name });
+      return json(res, { status: "ok" });
+    }
+
+    // GET /api/org/services — list all cross-department services
+    if (method === "GET" && pathname === "/api/org/services") {
+      const { scanOrg } = await import("./org.js");
+      const { buildServiceRegistry } = await import("./services.js");
+      const orgRegistry = scanOrg();
+      const services = buildServiceRegistry(orgRegistry);
+      const result = Array.from(services.values()).map((entry) => ({
+        name: entry.declaration.name,
+        description: entry.declaration.description,
+        provider: {
+          name: entry.provider.name,
+          displayName: entry.provider.displayName,
+          department: entry.provider.department,
+          rank: entry.provider.rank,
+        },
+      }));
+      return json(res, { services: result });
+    }
+
+    // POST /api/org/cross-request — route a service request to the provider
+    if (method === "POST" && pathname === "/api/org/cross-request") {
+      const parsed = await readJsonBody(req, res);
+      if (!parsed.ok) return;
+      const body = parsed.body as any;
+      const { fromEmployee, service, prompt, parentSessionId } = body;
+      if (!fromEmployee || !service || !prompt) {
+        return badRequest(res, "Missing required fields: fromEmployee, service, prompt");
       }
-      const filePath = candidates.find((c) => fs.existsSync(c));
-      if (!filePath) return notFound(res);
-      const content = yaml.load(fs.readFileSync(filePath, "utf-8"));
-      return json(res, content);
+
+      const { scanOrg } = await import("./org.js");
+      const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
+      const { buildServiceRegistry, buildRoutePath, resolveManagerChain } = await import("./services.js");
+
+      const orgRegistry = scanOrg();
+      const requester = orgRegistry.get(fromEmployee);
+      if (!requester) return notFound(res);
+
+      const services = buildServiceRegistry(orgRegistry);
+      const entry = services.get(service);
+      if (!entry) {
+        return json(res, { error: `Service "${service}" not found` }, 404);
+      }
+
+      const hierarchy = resolveOrgHierarchy(orgRegistry);
+      const route = buildRoutePath(fromEmployee, entry.provider.name, hierarchy);
+      const managers = resolveManagerChain(route, hierarchy);
+
+      const crossBrief = `## Cross-service request
+
+**From**: ${requester.displayName} (${requester.department})
+**Service**: ${service} — ${entry.declaration.description}
+
+### Request
+${prompt}
+
+---
+Handle this as a priority request from a colleague.`;
+
+      const config = context.getConfig();
+      const session = createSession({
+        engine: entry.provider.engine || config.engines.default,
+        model: entry.provider.model || undefined,
+        source: "cross-request",
+        sourceRef: `cross:${fromEmployee}:${service}`,
+        connector: "web",
+        sessionKey: `cross:${Date.now()}`,
+        replyContext: { source: "cross-request" },
+        employee: entry.provider.name,
+        parentSessionId: parentSessionId || undefined,
+        prompt: crossBrief,
+        portalName: config.portal?.portalName,
+        title: `Cross-request: ${fromEmployee} → ${service}`,
+      });
+      insertMessage(session.id, "user", crossBrief);
+      logger.info(`Cross-request session created: ${session.id} (${fromEmployee} → ${service} → ${entry.provider.name})`);
+
+      return json(res, {
+        sessionId: session.id,
+        provider: {
+          name: entry.provider.name,
+          displayName: entry.provider.displayName,
+          department: entry.provider.department,
+        },
+        route,
+        managers: managers.map((m) => m.employee.name),
+        service,
+      }, 201);
     }
 
     // GET /api/org/departments/:name/board
@@ -1520,20 +1710,32 @@ export async function handleApiRequest(
     if (method === "GET" && pathname === "/api/config") {
       const config = context.getConfig();
       // Sanitize: remove any secrets/tokens from connectors
+      const rawConnectors = config.connectors || {};
+      const sanitizedConnectors: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(rawConnectors)) {
+        if (k === "instances" && Array.isArray(v)) {
+          sanitizedConnectors.instances = v.map((inst: any) => ({
+            ...inst,
+            token: inst?.token ? "***" : undefined,
+            signingSecret: inst?.signingSecret ? "***" : undefined,
+            botToken: inst?.botToken ? "***" : undefined,
+            appToken: inst?.appToken ? "***" : undefined,
+          }));
+        } else if (v && typeof v === "object") {
+          sanitizedConnectors[k] = {
+            ...v,
+            token: (v as any)?.token ? "***" : undefined,
+            signingSecret: (v as any)?.signingSecret ? "***" : undefined,
+            botToken: (v as any)?.botToken ? "***" : undefined,
+            appToken: (v as any)?.appToken ? "***" : undefined,
+          };
+        } else {
+          sanitizedConnectors[k] = v;
+        }
+      }
       const sanitized = {
         ...config,
-        connectors: Object.fromEntries(
-          Object.entries(config.connectors || {}).map(([k, v]) => [
-            k,
-            {
-              ...v,
-              token: v?.token ? "***" : undefined,
-              signingSecret: v?.signingSecret ? "***" : undefined,
-              botToken: v?.botToken ? "***" : undefined,
-              appToken: v?.appToken ? "***" : undefined,
-            },
-          ]),
-        ),
+        connectors: sanitizedConnectors,
       };
       return json(res, sanitized);
     }
@@ -1629,9 +1831,26 @@ export async function handleApiRequest(
       return json(res, { lines });
     }
 
-    // POST /api/connectors/discord/incoming — receive proxied Discord messages from primary instance
-    if (method === "POST" && pathname === "/api/connectors/discord/incoming") {
-      const connector = context.connectors.get("discord");
+    // POST /api/connectors/reload — stop all instance connectors and restart from config
+    if (method === "POST" && pathname === "/api/connectors/reload") {
+      if (!context.reloadConnectorInstances) {
+        return json(res, { error: "Connector reload not available" }, 501);
+      }
+      try {
+        const result = await context.reloadConnectorInstances();
+        context.emit("connectors:reloaded", result);
+        return json(res, result);
+      } catch (err) {
+        return json(res, { error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+    }
+
+    // POST /api/connectors/:id/incoming — receive proxied Discord messages from primary instance
+    // Supports both the legacy /api/connectors/discord/incoming and named instance ids
+    params = matchRoute("/api/connectors/:id/incoming", pathname);
+    if (method === "POST" && params && params.id) {
+      // Try the exact instance id first, then fall back to "discord" for the legacy path
+      const connector = context.connectors.get(params.id) ?? (params.id === "discord" ? context.connectors.get("discord") : undefined);
       if (!connector) return notFound(res);
       if (!("deliverMessage" in connector)) {
         return json(res, { error: "Discord connector is not in remote mode" }, 400);
@@ -1659,7 +1878,7 @@ export async function handleApiRequest(
       );
 
       const incomingMsg: IncomingMessage = {
-        connector: "discord",
+        connector: params.id,
         source: "discord",
         sessionKey: body.sessionKey,
         channel: body.channel,
@@ -1679,9 +1898,11 @@ export async function handleApiRequest(
       return json(res, { status: "delivered" });
     }
 
-    // POST /api/connectors/discord/proxy — proxy connector operations from remote instances
-    if (method === "POST" && pathname === "/api/connectors/discord/proxy") {
-      const connector = context.connectors.get("discord");
+    // POST /api/connectors/:id/proxy — proxy connector operations from remote instances
+    // Supports both the legacy /api/connectors/discord/proxy and named instance ids
+    params = matchRoute("/api/connectors/:id/proxy", pathname);
+    if (method === "POST" && params && params.id) {
+      const connector = context.connectors.get(params.id) ?? (params.id === "discord" ? context.connectors.get("discord") : undefined);
       if (!connector) return notFound(res);
 
       const _parsed = await readJsonBody(req, res);
@@ -1755,8 +1976,10 @@ export async function handleApiRequest(
 
     // GET /api/connectors — list available connectors
     if (method === "GET" && pathname === "/api/connectors") {
-      const connectors = Array.from(context.connectors.values()).map((connector) => ({
+      const connectors = Array.from(context.connectors.entries()).map(([instanceId, connector]) => ({
         name: connector.name,
+        instanceId,
+        employee: connector.getEmployee?.() ?? undefined,
         ...connector.getHealth(),
       }));
       return json(res, connectors);
@@ -2464,15 +2687,20 @@ async function runWebSession(
     });
   }
 
+  // If this session has an assigned employee, load their persona
+  let employee: import("../shared/types.js").Employee | undefined;
+  if (currentSession.employee) {
+    const { findEmployee } = await import("./org.js");
+    const { scanOrg } = await import("./org.js");
+    const registry = scanOrg();
+    employee = findEmployee(currentSession.employee, registry);
+  }
+
+  const { scanOrg: scanOrgForHierarchy } = await import("./org.js");
+  const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
+  const orgHierarchy = resolveOrgHierarchy(scanOrgForHierarchy());
+
   try {
-    // If this session has an assigned employee, load their persona
-    let employee: import("../shared/types.js").Employee | undefined;
-    if (currentSession.employee) {
-      const { findEmployee } = await import("./org.js");
-      const { scanOrg } = await import("./org.js");
-      const registry = scanOrg();
-      employee = findEmployee(currentSession.employee, registry);
-    }
 
     const systemPrompt = buildContext({
       source: "web",
@@ -2482,11 +2710,14 @@ async function runWebSession(
       connectors: Array.from(context.connectors.keys()),
       config,
       sessionId: currentSession.id,
+      hierarchy: orgHierarchy,
     });
 
     const engineConfig = currentSession.engine === "codex"
       ? config.engines.codex
-      : config.engines.claude;
+      : currentSession.engine === "gemini"
+        ? config.engines.gemini ?? config.engines.claude
+        : config.engines.claude;
     const effortLevel = resolveEffort(engineConfig, currentSession, employee);
 
     let lastHeartbeatAt = 0;
@@ -2666,7 +2897,7 @@ async function runWebSession(
             lastError: fallbackResult.error ?? null,
           });
           if (completedFallback) {
-            notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs });
+            notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
           }
 
           context.emit("session:completed", {
@@ -2832,7 +3063,7 @@ async function runWebSession(
             notifyDiscordChannel(
               `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
             );
-            notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs });
+            notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
           }
 
           context.emit("session:completed", {
@@ -2859,7 +3090,7 @@ async function runWebSession(
           lastError: "Claude usage limit did not clear in time",
         });
         if (erroredSession) {
-          notifyParentSession(erroredSession, { error: "Claude usage limit did not clear in time" });
+          notifyParentSession(erroredSession, { error: "Claude usage limit did not clear in time" }, { alwaysNotify: employee?.alwaysNotify });
         }
         context.emit("session:completed", {
           sessionId: currentSession.id,
@@ -2927,7 +3158,7 @@ async function runWebSession(
         logger.debug(`[hikui-summary] Posted summary to parent ${summaryFor} and Discord`);
         // Do NOT call notifyParentSession — skip entirely to prevent loops
       } else {
-        notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs });
+        notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
       }
 
       // For top-level (COO) sessions: check auto-compact thresholds after each completed turn
@@ -2963,7 +3194,7 @@ async function runWebSession(
       lastError: errMsg,
     });
     if (erroredSession) {
-      notifyParentSession(erroredSession, { error: errMsg });
+      notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
     }
     context.emit("session:completed", {
       sessionId: currentSession.id,

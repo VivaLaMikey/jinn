@@ -1613,9 +1613,9 @@ export default function MeetingsPage() {
   useEffect(() => {
     api.getOrg().then(async (data: OrgData) => {
       const details = await Promise.all(
-        data.employees.map(async (name) => {
-          try { return await api.getEmployee(name) }
-          catch { return { name, displayName: name, department: '', rank: 'employee' as const, engine: 'unknown', model: 'unknown', persona: '' } }
+        data.employees.map(async (emp) => {
+          try { return await api.getEmployee(emp.name) }
+          catch { return { name: emp.name, displayName: emp.displayName || emp.name, department: emp.department || '', rank: emp.rank || 'employee', engine: emp.engine || 'unknown', model: emp.model || 'unknown', persona: emp.persona || '' } as Employee }
         })
       )
       setEmployees(details)

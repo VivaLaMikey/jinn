@@ -311,6 +311,7 @@ export interface UpdateSessionFields {
   transportMeta?: JsonObject | null;
   lastActivity?: string;
   lastError?: string | null;
+  title?: string;
 }
 
 export function updateSession(id: string, updates: UpdateSessionFields): Session | undefined {
@@ -361,6 +362,10 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.lastError !== undefined) {
     sets.push('last_error = ?');
     values.push(updates.lastError);
+  }
+  if (updates.title !== undefined) {
+    sets.push('title = ?');
+    values.push(updates.title);
   }
 
   if (sets.length === 0) return getSession(id);
@@ -443,6 +448,66 @@ export function accumulateSessionCost(id: string, cost: number, turns: number): 
   db.prepare(
     'UPDATE sessions SET total_cost = total_cost + ?, total_turns = total_turns + ? WHERE id = ?',
   ).run(cost, turns, id);
+}
+
+/**
+ * Duplicate a session and all its messages, returning a new session with a fresh ID.
+ * Does NOT fork the engine session — the caller handles that separately.
+ */
+export function duplicateSession(sourceId: string, newTitle?: string): { session: Session; messageCount: number } {
+  const db = initDb();
+  const source = getSession(sourceId);
+  if (!source) throw new Error(`Session ${sourceId} not found`);
+  if (!source.engineSessionId) throw new Error(`Session ${sourceId} has no engine session ID — cannot duplicate`);
+
+  const now = new Date().toISOString();
+  const newId = uuidv4();
+  const title = newTitle ?? `Copy of ${source.title || sourceId.slice(0, 8)}`;
+  const newSessionKey = `web:${Date.now()}`;
+
+  // Copy session + messages in a single transaction for consistency
+  const messages = db.prepare(
+    'SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC',
+  ).all(sourceId) as Array<{ role: string; content: string; timestamp: number }>;
+
+  const txn = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO sessions (
+        id, engine, engine_session_id, source, source_ref, connector, session_key,
+        reply_context, message_id, transport_meta,
+        employee, model, title, parent_session_id, effort_level, status,
+        total_cost, total_turns, created_at, last_activity
+      )
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 'idle', 0, 0, ?, ?)
+    `).run(
+      newId,
+      source.engine,
+      source.source,
+      source.sourceRef,
+      source.connector,
+      newSessionKey,
+      source.replyContext ? JSON.stringify(source.replyContext) : null,
+      source.messageId,
+      source.transportMeta ? JSON.stringify(source.transportMeta) : null,
+      source.employee,
+      source.model,
+      title,
+      source.effortLevel,
+      now,
+      now,
+    );
+
+    const insertMsg = db.prepare(
+      'INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)',
+    );
+    for (const msg of messages) {
+      insertMsg.run(uuidv4(), newId, msg.role, msg.content, msg.timestamp);
+    }
+  });
+  txn();
+
+  const newSession = getSession(newId)!;
+  return { session: newSession, messageCount: messages.length };
 }
 
 export function deleteSession(id: string): boolean {

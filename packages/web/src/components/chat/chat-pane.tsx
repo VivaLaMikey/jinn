@@ -4,8 +4,11 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '@/lib/api'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
+import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
 import { CliTranscript } from '@/components/chat/cli-transcript'
+import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
+import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { saveIntermediateMessages, loadIntermediateMessages, clearIntermediateMessages } from '@/lib/conversations'
 
@@ -39,6 +42,10 @@ interface ChatPaneProps {
   isStubSession?: boolean
   /** Callback to clear stub status */
   onStubCleared?: () => void
+  /** Incrementing counter that triggers input focus */
+  focusTrigger?: number
+  /** Callback to open keyboard shortcuts overlay */
+  onShortcutsClick?: () => void
 }
 
 export function ChatPane({
@@ -57,6 +64,8 @@ export function ChatPane({
   getOnboardingPrompt,
   isStubSession,
   onStubCleared,
+  focusTrigger,
+  onShortcutsClick,
 }: ChatPaneProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
@@ -65,6 +74,26 @@ export function ChatPane({
   const intermediateStartRef = useRef<number>(-1)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const sessionIdRef = useRef(sessionId)
+
+  // Employee picker state for new chat
+  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
+  const [pickerEmployees, setPickerEmployees] = useState<Pick<Employee, 'name' | 'displayName' | 'department' | 'rank'>[]>([])
+  const employeesFetchedRef = useRef(false)
+
+  useEffect(() => {
+    if (sessionId) return // Only fetch when no active session
+    if (employeesFetchedRef.current && pickerEmployees.length > 0) return // Use cached result
+    api.getOrg().then((data) => {
+      if (!Array.isArray(data.employees)) return
+      setPickerEmployees(data.employees.map((emp) => ({
+        name: emp.name,
+        displayName: emp.displayName,
+        department: emp.department,
+        rank: emp.rank,
+      })))
+      employeesFetchedRef.current = true
+    }).catch(() => {})
+  }, [sessionId, pickerEmployees.length])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
   // Helper: persist intermediate messages to localStorage
@@ -286,8 +315,13 @@ export function ChatPane({
       streamingTextRef.current = ''
       setStreamingText('')
       intermediateStartRef.current = -1
+      setSelectedEmployee(null)
       return
     }
+    // Clear streaming state immediately to avoid stale content flash
+    streamingTextRef.current = ''
+    setStreamingText('')
+    setLoading(false)
     loadSession(sessionId)
   }, [sessionId, loadSession])
 
@@ -360,11 +394,12 @@ export function ChatPane({
           await api.sendMessage(sid, { message: onboardingPrompt, attachments: attachmentIds })
           onRefresh?.()
         } else if (!sid) {
-          const session = (await api.createSession({
-            source: 'web',
-            prompt: message,
-            attachments: attachmentIds,
-          })) as Record<string, unknown>
+          const params = buildNewSessionParams({
+            message,
+            selectedEmployee,
+            attachmentIds,
+          })
+          const session = (await api.createSession(params)) as Record<string, unknown>
           sid = String(session.id)
           onSessionCreated?.(sid)
           onRefresh?.()
@@ -385,7 +420,7 @@ export function ChatPane({
         ])
       }
     },
-    [sessionId, isStubSession, getOnboardingPrompt, onStubCleared, onSessionCreated, onRefresh]
+    [sessionId, selectedEmployee, isStubSession, getOnboardingPrompt, onStubCleared, onSessionCreated, onRefresh]
   )
 
   const handleStatusRequest = useCallback(async () => {
@@ -615,12 +650,24 @@ export function ChatPane({
         </div>
       )}
 
+      {/* Employee picker for new chat */}
+      {!sessionId && messages.length === 0 && viewMode === 'chat' && (
+        <div className="flex flex-1 items-center justify-center">
+          <ChatEmployeePicker
+            employees={pickerEmployees}
+            selectedEmployee={selectedEmployee}
+            onSelect={setSelectedEmployee}
+            portalName={portalName}
+          />
+        </div>
+      )}
+
       {/* Messages / CLI transcript */}
       {viewMode === 'cli' && sessionId ? (
         <CliTranscript sessionId={sessionId} />
-      ) : (
+      ) : (sessionId || messages.length > 0) ? (
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
-      )}
+      ) : null}
 
       {/* Queue panel */}
       {viewMode === 'chat' && (
@@ -644,6 +691,8 @@ export function ChatPane({
           events={events}
           droppedFiles={droppedFiles}
           onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
+          focusTrigger={focusTrigger}
+          onShortcutsClick={onShortcutsClick}
         />
       )}
     </div>
