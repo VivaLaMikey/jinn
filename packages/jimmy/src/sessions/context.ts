@@ -73,7 +73,7 @@ export function buildContext(opts: {
     sections.push({
       tier: Tier.ESSENTIAL,
       marker: "# You are",
-      content: buildEmployeeIdentity(opts.employee, portalName, language),
+      content: buildEmployeeIdentity(opts.employee, portalName, language, gatewayUrl),
       summary: `# You are ${opts.employee.displayName}\nEmployee: ${opts.employee.name}, ${opts.employee.department}, ${opts.employee.rank}`,
     });
   } else {
@@ -203,7 +203,7 @@ export function buildContext(opts: {
 // Section builders
 // ═══════════════════════════════════════════════════════════════
 
-function buildEmployeeIdentity(employee: Employee, portalName: string, language: string): string {
+function buildEmployeeIdentity(employee: Employee, portalName: string, language: string, gatewayUrl: string): string {
   const languageInstruction = language !== "English"
     ? `\n**Language**: Always respond in ${language}. All your communication with the user must be in ${language}.\n`
     : "";
@@ -234,7 +234,14 @@ You can:
 - Access skills, knowledge base, and documentation
 - Collaborate with other employees by mentioning them or creating sessions
 
-Be proactive, take initiative, and deliver results. You're not a chatbot — you're a worker.`;
+Be proactive, take initiative, and deliver results. You're not a chatbot — you're a worker.
+
+## Peer messaging
+You can message sibling sessions (other employees spawned under the same parent) directly, without routing through the COO:
+- **Discover siblings**: \`GET ${gatewayUrl}/api/sessions/{your-session-id}/siblings\`
+- **Send a message**: \`POST ${gatewayUrl}/api/sessions/{your-session-id}/peer\` with body \`{"targetSessionId": "<id>", "message": "<text>"}\`
+
+Use peer messaging to hand off work, share results, or coordinate with a sibling employee when you don't need COO oversight.`;
 }
 
 function buildIdentity(portalName: string, operatorName?: string, language?: string): string {
@@ -618,6 +625,8 @@ You can call these endpoints with curl to inspect and manage the gateway:
 | \`/api/sessions\` | POST | Create new session (\`{prompt, engine?, employee?, parentSessionId?}\`) |
 | \`/api/sessions/:id/message\` | POST | Send follow-up message to existing session (\`{message}\`) |
 | \`/api/sessions/:id/children\` | GET | List child sessions of a parent |
+| \`/api/sessions/:id/siblings\` | GET | List sibling sessions (same parent, excluding self) |
+| \`/api/sessions/:id/peer\` | POST | Send message to a sibling session (\`{targetSessionId, message}\`) |
 | \`/api/cron\` | GET | List cron jobs |
 | \`/api/cron/:id\` | PUT | Update cron job (toggle enabled, etc.) |
 | \`/api/cron/:id/runs\` | GET | Cron run history |

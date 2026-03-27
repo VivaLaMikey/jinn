@@ -9,6 +9,7 @@ import {
   Palette,
   ArrowLeftRight,
   Gauge,
+  Shield,
 } from "lucide-react"
 import { useTheme } from "@/app/providers"
 import { useSettings } from "@/app/settings-provider"
@@ -136,6 +137,58 @@ function UsageIndicator({ hovered }: { hovered: boolean }) {
 }
 
 // ---------------------------------------------------------------------------
+// Model cap toggle
+// ---------------------------------------------------------------------------
+
+function ModelCapToggle({ hovered }: { hovered: boolean }) {
+  const [modelCap, setModelCap] = useState<string>("")
+
+  useEffect(() => {
+    let mounted = true
+    api.getConfig().then((cfg) => {
+      if (!mounted) return
+      const cap = (cfg as Record<string, unknown>)?.engines
+        ? ((cfg as Record<string, unknown>).engines as Record<string, unknown>)?.modelCap as string ?? ""
+        : (cfg as Record<string, unknown>)?.modelCap as string ?? ""
+      setModelCap(cap ?? "")
+    }).catch(() => {})
+    return () => { mounted = false }
+  }, [])
+
+  async function toggle() {
+    const next = modelCap ? "" : "sonnet"
+    setModelCap(next)
+    try {
+      await api.updateConfig({ engines: { modelCap: next } })
+    } catch {
+      setModelCap(modelCap)
+    }
+  }
+
+  const active = Boolean(modelCap)
+  const label = active ? `${modelCap} cap` : "No cap"
+
+  return (
+    <div className="shrink-0 px-2 pt-1">
+      <button
+        onClick={toggle}
+        aria-label={`Model cap: ${label}. Click to toggle.`}
+        className="flex h-10 w-full items-center gap-2.5 rounded-md px-3 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <Shield
+          size={18}
+          className="shrink-0 transition-colors"
+          style={{ color: active ? "var(--system-green)" : undefined }}
+        />
+        <span className={cn("whitespace-nowrap transition-opacity duration-200", hovered ? "opacity-100" : "opacity-0")}>
+          {label}
+        </span>
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
 
@@ -254,6 +307,8 @@ export function Sidebar() {
       )}
 
       <UsageIndicator hovered={hovered} />
+
+      <ModelCapToggle hovered={hovered} />
 
       <div className="shrink-0 px-2 pb-3 pt-2">
         <button

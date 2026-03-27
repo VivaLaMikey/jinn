@@ -19,6 +19,7 @@ import {
   insertMessage,
   getMessages,
   deleteMessages,
+  deleteMessagesByRole,
   enqueueQueueItem,
   cancelQueueItem,
   getQueueItems,
@@ -52,7 +53,41 @@ import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
-import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
+
+/** Generate a scoped MCP config file for a session and return its path.
+ *  employee.mcp === true  → all servers from ~/.claude/settings.json
+ *  employee.mcp === false | undefined | [] → no MCPs (empty config)
+ *  employee.mcp === string[] → only the named servers
+ *  No employee (COO session) → no MCPs
+ */
+function writeScopedMcpConfig(employee: import("../shared/types.js").Employee | null | undefined, sessionId: string): string {
+  const tmpDir = path.join(JINN_HOME, "tmp");
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const outPath = path.join(tmpDir, `mcp-${sessionId}.json`);
+
+  const claudeSettings = path.join(process.env.HOME ?? "/", ".claude", "settings.json");
+  let allServers: Record<string, unknown> = {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(claudeSettings, "utf8"));
+    allServers = raw.mcpServers ?? {};
+  } catch { /* no global settings */ }
+
+  let servers: Record<string, unknown> = {};
+  const mcpSpec = employee?.mcp;
+
+  if (mcpSpec === true) {
+    servers = allServers;
+  } else if (Array.isArray(mcpSpec) && mcpSpec.length > 0) {
+    for (const name of mcpSpec) {
+      if (allServers[name]) servers[name] = allServers[name];
+    }
+  }
+  // else: empty — no MCPs
+
+  fs.writeFileSync(outPath, JSON.stringify({ mcpServers: servers }, null, 2));
+  return outPath;
+}
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel, maybeAutoCompact } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleMeetingsApi } from "../meetings/api.js";
 import {
@@ -64,7 +99,35 @@ import {
   getRestartTrackerState,
 } from "./restart-tracker.js";
 import { spawnRestartWatcher } from "./restart-watcher-spawner.js";
-import { loadOfficeState, saveOfficeState, STORE_CATALOG, purchaseItem, placeDecoration, removeDecoration, creditCoins, getWallet, getInventory } from "./office.js";
+
+const MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+
+const EFFORT_TO_MODEL: Record<string, string> = {
+  low: "haiku",
+  medium: "sonnet",
+  high: "sonnet", // Opus only via explicit model override in the request
+};
+
+/**
+ * Map an effortLevel string to a model name.
+ * Returns undefined when the effortLevel is unrecognised or absent.
+ */
+function resolveModelFromEffort(effortLevel: string | undefined): string | undefined {
+  if (!effortLevel) return undefined;
+  return EFFORT_TO_MODEL[effortLevel.toLowerCase()];
+}
+
+function applyModelCap(model: string | undefined, config: JinnConfig): string | undefined {
+  const cap = config.engines.modelCap;
+  if (!cap || !model) return model;
+  const modelTier = MODEL_TIERS[model] ?? 999;
+  const capTier = MODEL_TIERS[cap] ?? 999;
+  if (modelTier > capTier) {
+    logger.info('Model cap applied: ' + model + ' capped to ' + cap);
+    return cap;
+  }
+  return model;
+}
 
 export interface ApiContext {
   config: JinnConfig;
@@ -409,6 +472,7 @@ export async function handleApiRequest(
           default: config.engines.default,
           claude: { model: config.engines.claude.model, available: true },
           codex: { model: config.engines.codex.model, available: true },
+          modelCap: config.engines.modelCap,
         },
         sessions: { total: sessions.length, running, active: running },
         connectors,
@@ -723,6 +787,91 @@ export async function handleApiRequest(
       return json(res, children.map((child) => serializeSession(child, context)));
     }
 
+    // GET /api/sessions/:id/siblings — returns all sibling sessions (same parent, excluding self)
+    params = matchRoute("/api/sessions/:id/siblings", pathname);
+    if (method === "GET" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      if (!session.parentSessionId) return json(res, []);
+      const siblings = listSessions().filter(
+        (s) => s.parentSessionId === session.parentSessionId && s.id !== params!.id,
+      );
+      return json(res, siblings.map((s) => serializeSession(s, context)));
+    }
+
+    // POST /api/sessions/:id/peer — send a message to a sibling session
+    // Both sessions must share the same parentSessionId. Logs in both sessions.
+    params = matchRoute("/api/sessions/:id/peer", pathname);
+    if (method === "POST" && params) {
+      const sourceSession = getSession(params.id);
+      if (!sourceSession) return notFound(res);
+
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      const { targetSessionId, message } = body;
+      if (!targetSessionId) return badRequest(res, "targetSessionId is required");
+      if (!message) return badRequest(res, "message is required");
+
+      // Validate sibling relationship
+      if (!sourceSession.parentSessionId) {
+        return json(res, { error: "Source session has no parent — peer messaging requires a shared parent" }, 400);
+      }
+      const targetSession = getSession(targetSessionId);
+      if (!targetSession) return json(res, { error: "Target session not found" }, 404);
+      if (targetSession.parentSessionId !== sourceSession.parentSessionId) {
+        return json(res, { error: "Sessions are not siblings — they do not share the same parent session" }, 403);
+      }
+
+      const config = context.getConfig();
+      const engine = context.sessionManager.getEngine(targetSession.engine);
+      if (!engine) return serverError(res, `Engine "${targetSession.engine}" not available`);
+
+      // Log send in source session
+      const peerLabel = targetSession.employee || targetSessionId;
+      insertMessage(sourceSession.id, "notification", `[peer → ${peerLabel}] ${message}`);
+      context.emit("session:notification", { sessionId: sourceSession.id, message: `Peer message sent to ${peerLabel}` });
+
+      // Deliver to target session (mirrors /message logic)
+      insertMessage(targetSession.id, "user", message);
+
+      if (targetSession.status === "running") {
+        if (
+          (config.sessions?.interruptOnNewMessage ?? true) &&
+          isInterruptibleEngine(engine) &&
+          engine.isAlive(targetSession.id)
+        ) {
+          logger.info(`Interrupting session ${targetSession.id} for peer message from ${params.id}`);
+          engine.kill(targetSession.id, "Interrupted: peer message received");
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          context.emit("session:interrupted", { sessionId: targetSession.id, reason: "peer message" });
+        } else {
+          context.emit("session:queued", { sessionId: targetSession.id, message });
+        }
+      }
+
+      if (targetSession.status === "interrupted") {
+        updateSession(targetSession.id, {
+          status: "running",
+          lastActivity: new Date().toISOString(),
+          lastError: null,
+        });
+        context.emit("session:resumed", { sessionId: targetSession.id });
+      }
+
+      context.sessionManager.getQueue().clearCancelled(
+        targetSession.sessionKey || targetSession.sourceRef || targetSession.id,
+      );
+
+      const peerSessionKey = targetSession.sessionKey || targetSession.sourceRef || targetSession.id;
+      const queueItemId = enqueueQueueItem(targetSession.id, peerSessionKey, message);
+      context.emit("queue:updated", { sessionId: targetSession.id, sessionKey: peerSessionKey });
+      dispatchWebSessionRun(targetSession, message, engine, config, context, { queueItemId });
+
+      return json(res, { status: "queued", targetSessionId });
+    }
+
     // GET /api/sessions/:id/transcript — return raw Claude Code session transcript
     params = matchRoute("/api/sessions/:id/transcript", pathname);
     if (method === "GET" && params) {
@@ -785,7 +934,16 @@ export async function handleApiRequest(
       const prompt = body.prompt || body.message;
       if (!prompt) return badRequest(res, "prompt or message is required");
       const config = context.getConfig();
-      const engineName = body.engine || config.engines.default;
+
+      // Look up employee to apply their engine/model preferences
+      let employee: import("../shared/types.js").Employee | undefined;
+      if (body.employee) {
+        const { findEmployee, scanOrg } = await import("./org.js");
+        const registry = scanOrg();
+        employee = findEmployee(body.employee, registry);
+      }
+
+      const engineName = body.engine || employee?.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
       const session = createSession({
         engine: engineName,
@@ -795,8 +953,17 @@ export async function handleApiRequest(
         sessionKey,
         replyContext: { source: "web" },
         employee: body.employee,
+        model: applyModelCap(
+          // Resolution chain: explicit request > effort mapping > employee default
+          body.model ||
+          resolveModelFromEffort(employee?.effortLevel) ||
+          employee?.model ||
+          undefined,
+          config,
+        ),
         parentSessionId: body.parentSessionId,
         effortLevel: body.effortLevel,
+        transportMeta: body.transportMeta ?? null,
         prompt,
         portalName: config.portal?.portalName,
       });
@@ -912,6 +1079,25 @@ export async function handleApiRequest(
       dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
 
       return json(res, { status: "queued", sessionId: session.id });
+    }
+
+    // POST /api/sessions/:id/notify — passive notification (display-only, does NOT queue an AI turn)
+    // Persists a message with role "notification" and broadcasts a WebSocket event to all clients.
+    // Used by Hikui summary sessions to post their output back to the parent session without waking the COO.
+    params = matchRoute("/api/sessions/:id/notify", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      const text = body.text;
+      if (!text) return badRequest(res, "text is required");
+      const role: string = typeof body.role === "string" ? body.role : "notification";
+      insertMessage(session.id, role, text);
+      context.emit("session:notification", { sessionId: session.id, text, role });
+      return json(res, { ok: true });
     }
 
     // GET /api/cron
@@ -2063,84 +2249,6 @@ export async function handleApiRequest(
       return json(res, getBudgetEvents());
     }
 
-    // ---------------------------------------------------------------------------
-    // Office game routes
-    // ---------------------------------------------------------------------------
-
-    // GET /api/office/state
-    if (method === "GET" && pathname === "/api/office/state") {
-      const state = loadOfficeState();
-      return json(res, {
-        wallets: state.wallets,
-        decorations: state.decorations,
-        inventory: state.inventory,
-      });
-    }
-
-    // GET /api/office/store
-    if (method === "GET" && pathname === "/api/office/store") {
-      return json(res, STORE_CATALOG);
-    }
-
-    // GET /api/office/wallets
-    if (method === "GET" && pathname === "/api/office/wallets") {
-      const state = loadOfficeState();
-      return json(res, state.wallets);
-    }
-
-    // GET /api/office/wallets/:name
-    params = matchRoute("/api/office/wallets/:name", pathname);
-    if (method === "GET" && params) {
-      const state = loadOfficeState();
-      return json(res, getWallet(state, params.name));
-    }
-
-    // POST /api/office/store/purchase
-    if (method === "POST" && pathname === "/api/office/store/purchase") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      const body = _parsed.body as { employee: string; itemId: string };
-      const state = loadOfficeState();
-      const result = purchaseItem(state, body.employee, body.itemId);
-      return json(res, result, result.success ? 200 : 400);
-    }
-
-    // PUT /api/office/decorations
-    if (method === "PUT" && pathname === "/api/office/decorations") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      const body = _parsed.body as { itemId: string; room: string; owner: string; x: number; y: number };
-      const state = loadOfficeState();
-      const result = placeDecoration(state, body.itemId, body.room, body.owner, body.x, body.y);
-      return json(res, result, result.success ? 200 : 400);
-    }
-
-    // DELETE /api/office/decorations/:id
-    params = matchRoute("/api/office/decorations/:id", pathname);
-    if (method === "DELETE" && params) {
-      const state = loadOfficeState();
-      const result = removeDecoration(state, params.id, "coo");
-      return json(res, result, result.success ? 200 : 400);
-    }
-
-    // POST /api/office/credit
-    if (method === "POST" && pathname === "/api/office/credit") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      const body = _parsed.body as { employee: string; amount: number };
-      const state = loadOfficeState();
-      creditCoins(state, body.employee, body.amount);
-      saveOfficeState(state);
-      return json(res, { success: true, wallet: getWallet(state, body.employee) });
-    }
-
-    // GET /api/office/inventory/:name
-    params = matchRoute("/api/office/inventory/:name", pathname);
-    if (method === "GET" && params) {
-      const state = loadOfficeState();
-      return json(res, getInventory(state, params.name));
-    }
-
     return notFound(res);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -2402,15 +2510,30 @@ async function runWebSession(
       })()
       : prompt;
 
+    // Prepend any unread notification messages so the COO sees completions
+    // even when resuming via --resume (Claude Code internal history is blind to DB-only messages)
+    const pendingNotifications = (() => {
+      const allMessages = getMessages(currentSession.id);
+      const lastAssistantTs = [...allMessages].reverse().find((m) => m.role === "assistant")?.timestamp ?? 0;
+      return allMessages.filter((m) => m.role === "notification" && m.timestamp > lastAssistantTs);
+    })();
+    const finalPrompt = pendingNotifications.length > 0
+      ? `[Pending notifications since your last response]\n${pendingNotifications.map((m) => `- ${m.content}`).join("\n")}\n\n${promptToRun}`
+      : promptToRun;
+    if (pendingNotifications.length > 0) {
+      deleteMessagesByRole(currentSession.id, "notification");
+    }
+
     const result = await engine.run({
-      prompt: promptToRun,
+      prompt: finalPrompt,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
       systemPrompt,
       cwd: JINN_HOME,
       bin: engineConfig.bin,
-      model: currentSession.model ?? engineConfig.model,
+      model: applyModelCap(currentSession.model ?? engineConfig.model, config),
       effortLevel,
       cliFlags: employee?.cliFlags,
+      mcpConfigPath: writeScopedMcpConfig(employee ?? null, currentSession.id),
       attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
       onStream: (delta) => {
@@ -2508,9 +2631,10 @@ async function runWebSession(
             systemPrompt,
             cwd: JINN_HOME,
             bin: fallbackConfig.bin,
-            model: currentSession.model ?? fallbackConfig.model,
+            model: applyModelCap(currentSession.model ?? fallbackConfig.model, config),
             effortLevel: fallbackEffort,
             cliFlags: employee?.cliFlags,
+            mcpConfigPath: writeScopedMcpConfig(employee ?? null, currentSession.id),
             sessionId: currentSession.id,
             onStream: (delta) => {
               context.emit("session:delta", {
@@ -2654,9 +2778,10 @@ async function runWebSession(
             systemPrompt,
             cwd: JINN_HOME,
             bin: engineConfig.bin,
-            model: current.model ?? engineConfig.model,
+            model: applyModelCap(current.model ?? engineConfig.model, config),
             effortLevel,
             cliFlags: employee?.cliFlags,
+            mcpConfigPath: writeScopedMcpConfig(employee ?? null, currentSession.id),
             sessionId: currentSession.id,
             onStream: (delta) => {
               context.emit("session:delta", {
@@ -2768,7 +2893,47 @@ async function runWebSession(
       }
     }
     if (completedSession) {
-      notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs });
+      const completedMeta = (completedSession.transportMeta || {}) as Record<string, unknown>;
+      const summaryFor = typeof completedMeta._summaryFor === "string" ? completedMeta._summaryFor : null;
+
+      if (summaryFor) {
+        // This is a Hikui summary session — its result IS the summary text.
+        // Post passively to the parent session and Discord without waking the COO.
+        const summary = result.result || "(no summary)";
+        const gatewayPort = config.gateway?.port || 7777;
+        const connector = config.notifications?.connector || "discord";
+        const channel = config.notifications?.channel;
+
+        // Post passively to the parent session chat (display-only, no AI turn)
+        fetch(`http://127.0.0.1:${gatewayPort}/api/sessions/${summaryFor}/notify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: summary, role: "notification" }),
+        }).catch((err) => {
+          logger.warn(`[hikui-summary] Failed to post summary to parent ${summaryFor}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+
+        // Post to Discord if a channel is configured
+        if (channel) {
+          fetch(`http://127.0.0.1:${gatewayPort}/api/connectors/${connector}/send`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel, text: summary }),
+          }).catch((err) => {
+            logger.warn(`[hikui-summary] Failed to post summary to Discord: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+
+        logger.debug(`[hikui-summary] Posted summary to parent ${summaryFor} and Discord`);
+        // Do NOT call notifyParentSession — skip entirely to prevent loops
+      } else {
+        notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs });
+      }
+
+      // For top-level (COO) sessions: check auto-compact thresholds after each completed turn
+      if (!completedSession.parentSessionId) {
+        maybeAutoCompact(completedSession, config);
+      }
     }
 
     context.emit("session:completed", {

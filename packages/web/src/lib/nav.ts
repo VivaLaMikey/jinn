@@ -8,7 +8,7 @@ import {
   Zap,
   Settings,
   CalendarDays,
-  Building2,
+  Gauge,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -26,7 +26,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/kanban", label: "Kanban", icon: LayoutGrid },
   { href: "/cron", label: "Cron", icon: Clock },
   { href: "/logs", label: "Activity", icon: Activity },
-  { href: "/office", label: "Office", icon: Building2 },
   { href: "/skills", label: "Skills", icon: Zap },
+  { href: "/usage", label: "Usage", icon: Gauge },
   { href: "/settings", label: "Settings", icon: Settings },
 ]

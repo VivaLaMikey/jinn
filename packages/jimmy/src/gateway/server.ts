@@ -22,7 +22,7 @@ import { RemoteDiscordConnector } from "../connectors/discord/remote.js";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { loadJobs } from "../cron/jobs.js";
 import { startScheduler, reloadScheduler, stopScheduler } from "../cron/scheduler.js";
-import { scanOrg } from "./org.js";
+import { scanOrg, findEmployee } from "./org.js";
 import {
   loadRestartTracker,
   canRestart,
@@ -234,9 +234,17 @@ export async function startGateway(
   } else if (config.connectors?.discord?.botToken) {
     // Primary mode: direct Discord bot connection
     try {
-      const discord = new DiscordConnector(config.connectors.discord as import("../connectors/discord/index.js").DiscordConnectorConfig);
+      const discordConfig = config.connectors.discord as import("../connectors/discord/index.js").DiscordConnectorConfig;
+      const discord = new DiscordConnector(discordConfig);
       discord.onMessage((msg) => {
-        sessionManager.route(msg, discord).catch((err) => {
+        const channelEmployeeName = discordConfig.channelEmployees?.[msg.channel];
+        let routeOpts: import("../sessions/manager.js").RouteOptions = {};
+        if (channelEmployeeName) {
+          const orgRegistry = scanOrg();
+          const emp = findEmployee(channelEmployeeName, orgRegistry);
+          if (emp) routeOpts = { employee: emp, engine: emp.engine ?? config.engines.default, model: emp.model };
+        }
+        sessionManager.route(msg, discord, routeOpts).catch((err) => {
           logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
         });
       });

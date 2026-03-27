@@ -17,7 +17,7 @@ import {
   insertMessage,
   updateSession,
 } from "./registry.js";
-import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel, maybeAutoCompact } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
@@ -111,6 +111,11 @@ export class SessionManager {
   private queue = new SessionQueue();
   private connectorProvider: () => Map<string, Connector> = () => new Map();
   private emit: (event: string, payload: unknown) => void;
+  private debounceBuffers = new Map<string, {
+    messages: Array<{ msg: IncomingMessage; connector: Connector; opts: RouteOptions }>;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  private static readonly DEBOUNCE_MS = 3000;
 
   constructor(
     config: JinnConfig,
@@ -209,10 +214,20 @@ export class SessionManager {
       ).catch(() => {});
     }
 
-    if (session.status === "running" && this.queue.isRunning(msg.sessionKey) && connector.getCapabilities().reactions) {
-      await connector.addReaction(target, "clock1").catch(() => {});
+    // Debounce: if session is busy or there's already a pending buffer, accumulate messages
+    const isBusy = this.queue.isRunning(msg.sessionKey) || this.queue.getPendingCount(msg.sessionKey) > 0;
+    const hasExistingBuffer = this.debounceBuffers.has(msg.sessionKey);
+
+    if (isBusy || hasExistingBuffer) {
+      // Add clock1 reaction to each individual message as it arrives
+      if (connector.getCapabilities().reactions) {
+        await connector.addReaction(target, "clock1").catch(() => {});
+      }
+      this.bufferMessage(msg, connector, opts);
+      return { sessionId: session.id };
     }
 
+    // Session is idle — process immediately
     const sessionId = session.id;
 
     await this.queue.enqueue(msg.sessionKey, () =>
@@ -220,6 +235,82 @@ export class SessionManager {
     );
 
     return { sessionId };
+  }
+
+  private bufferMessage(msg: IncomingMessage, connector: Connector, opts: RouteOptions): void {
+    const sessionKey = msg.sessionKey;
+    const existing = this.debounceBuffers.get(sessionKey);
+
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.messages.push({ msg, connector, opts });
+    } else {
+      this.debounceBuffers.set(sessionKey, {
+        messages: [{ msg, connector, opts }],
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      });
+    }
+
+    const buffer = this.debounceBuffers.get(sessionKey)!;
+    buffer.timer = setTimeout(() => {
+      void this.flushBuffer(sessionKey);
+    }, SessionManager.DEBOUNCE_MS);
+  }
+
+  private async flushBuffer(sessionKey: string): Promise<void> {
+    const buffer = this.debounceBuffers.get(sessionKey);
+    if (!buffer || buffer.messages.length === 0) {
+      this.debounceBuffers.delete(sessionKey);
+      return;
+    }
+
+    this.debounceBuffers.delete(sessionKey);
+
+    const lastEntry = buffer.messages[buffer.messages.length - 1];
+    const { connector, opts } = lastEntry;
+    const lastMsg = lastEntry.msg;
+
+    // Combine all message texts (newline-separated, preserving order)
+    const combinedText = buffer.messages.map((entry) => entry.msg.text).join("\n");
+
+    // Merge attachments from all messages
+    const combinedAttachments = buffer.messages.flatMap((entry) => entry.msg.attachments);
+
+    // Create combined message using last message's replyContext/messageId
+    const combinedMsg: IncomingMessage = {
+      ...lastMsg,
+      text: combinedText,
+      attachments: combinedAttachments,
+    };
+
+    // Re-fetch session (it may have been updated since buffering)
+    let session = getSessionBySessionKey(sessionKey);
+    if (!session) {
+      logger.warn(`Session for ${sessionKey} disappeared during debounce — dropping ${buffer.messages.length} buffered messages`);
+      return;
+    }
+
+    // Update session with the latest reply context from the combined message
+    session = updateSession(session.id, {
+      replyContext: combinedMsg.replyContext,
+      messageId: combinedMsg.messageId ?? null,
+      transportMeta: mergeTransportMeta(session.transportMeta, combinedMsg.transportMeta),
+    }) ?? session;
+
+    session = maybeRevertEngineOverride(session);
+
+    const target = connector.reconstructTarget(combinedMsg.replyContext);
+    target.messageTs ??= combinedMsg.messageId;
+
+    const attachmentPaths = combinedMsg.attachments
+      .map((attachment) => attachment.localPath)
+      .filter((filePath): filePath is string => !!filePath);
+
+    logger.info(`Debounce flush: combined ${buffer.messages.length} messages for session ${session.id}`);
+
+    await this.queue.enqueue(sessionKey, () =>
+      this.runSession(session!, combinedMsg, attachmentPaths, connector, target, opts.employee),
+    );
   }
 
   private async runSession(
@@ -745,6 +836,10 @@ export class SessionManager {
       });
       if (updatedSession) {
         notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs });
+        // For top-level (COO) sessions: check auto-compact thresholds after each completed turn
+        if (!updatedSession.parentSessionId) {
+          maybeAutoCompact(updatedSession, this.config);
+        }
       }
 
       logger.info(
@@ -932,6 +1027,13 @@ export class SessionManager {
   }
 
   resetSession(sessionKey: string): void {
+    // Clear any pending debounce buffer
+    const buffer = this.debounceBuffers.get(sessionKey);
+    if (buffer) {
+      clearTimeout(buffer.timer);
+      this.debounceBuffers.delete(sessionKey);
+    }
+
     const session = getSessionBySessionKey(sessionKey);
     if (session) {
       deleteSession(session.id);

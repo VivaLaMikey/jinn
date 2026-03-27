@@ -155,6 +155,8 @@ export interface Session {
   totalTurns: number;
   queueDepth?: number;
   transportState?: "idle" | "queued" | "running" | "error" | "interrupted";
+  lastMessage?: string | null;
+  lastMessageRole?: string | null;
   createdAt: string;
   lastActivity: string;
   lastError: string | null;
@@ -289,6 +291,10 @@ export interface DiscordConnectorConfig {
   channelId?: string;
   /** Route messages from specific channels to remote Jinn instances */
   channelRouting?: Record<string, string>;
+  /** Route messages from specific channels to a named employee on this instance */
+  channelEmployees?: Record<string, string>;
+  /** Restrict specific channels to a list of allowed Discord user IDs */
+  channelAllowFrom?: Record<string, string[]>;
   /** URL of the primary Jinn instance to proxy Discord I/O through (secondary/remote mode) */
   proxyVia?: string;
 }
@@ -315,6 +321,7 @@ export interface JinnConfig {
     default: "claude" | "codex";
     claude: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
+    modelCap?: string;
   };
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;
@@ -336,6 +343,12 @@ export interface JinnConfig {
     sessionTTLDays?: number;
     /** When true, all non-employee non-cron messages share a single "unified:primary" session across connectors. */
     unified?: boolean;
+    /** Automatically compact the main session context after child sessions complete. Default: true. */
+    autoCompact?: boolean;
+    /** Compact the main session after this many child session completions. Default: 3. */
+    compactAfterChildren?: number;
+    /** Compact the main session when message count exceeds this threshold. Default: 50. */
+    compactAfterMessages?: number;
   };
   cron?: {
     defaultDelivery?: CronDelivery;
@@ -345,6 +358,8 @@ export interface JinnConfig {
   notifications?: {
     connector?: string;  // defaults to "discord"
     channel?: string;    // Discord channel ID for admin notifications
+    /** Route child session completions through Hikui for a brief 1-2 sentence summary instead of waking the COO */
+    completionSummary?: boolean;
   };
   portal?: PortalConfig;
   context?: {

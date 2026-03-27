@@ -33,6 +33,10 @@ export interface DiscordConnectorConfig {
   channelId?: string;
   /** Route messages from specific channels to remote Jinn instances */
   channelRouting?: Record<string, string>;
+  /** Route messages from specific channels to a named employee on this instance */
+  channelEmployees?: Record<string, string>;
+  /** Restrict specific channels to a list of allowed Discord user IDs */
+  channelAllowFrom?: Record<string, string[]>;
   /** If set, this instance proxies all Discord operations through the primary instance at this URL */
   proxyVia?: string;
 }
@@ -56,6 +60,16 @@ export class DiscordConnector implements Connector {
     if (this.config.channelRouting) {
       this.config.channelRouting = Object.fromEntries(
         Object.entries(this.config.channelRouting).map(([k, v]) => [String(k), v])
+      );
+    }
+    if (this.config.channelEmployees) {
+      this.config.channelEmployees = Object.fromEntries(
+        Object.entries(this.config.channelEmployees).map(([k, v]) => [String(k), v])
+      );
+    }
+    if (this.config.channelAllowFrom) {
+      this.config.channelAllowFrom = Object.fromEntries(
+        Object.entries(this.config.channelAllowFrom).map(([k, v]) => [String(k), v])
       );
     }
     this.allowedUserIds = new Set(
@@ -392,11 +406,24 @@ export class DiscordConnector implements Connector {
       return;
     }
 
-    // Channel restriction — only respond in a specific channel (+ DMs always allowed)
-    if (this.config.channelId && message.channel.id !== this.config.channelId && !message.channel.isDMBased()) return;
+    // Channel employees — explicitly configured channels bypass the channelId restriction
+    const isChannelEmployee = !!this.config.channelEmployees?.[message.channel.id];
 
-    // User allowlist
-    if (this.allowedUserIds.size > 0 && !this.allowedUserIds.has(message.author.id)) return;
+    // Channel restriction — only respond in configured channel (+ DMs + explicitly routed channels)
+    if (this.config.channelId && message.channel.id !== this.config.channelId && !message.channel.isDMBased() && !isChannelEmployee) return;
+
+    // Per-channel allowlist (takes precedence over global allowFrom for that channel)
+    // channelEmployee channels are open to any user — global allowFrom does not apply
+    const channelAllowList = this.config.channelAllowFrom?.[message.channel.id];
+    if (channelAllowList) {
+      if (!channelAllowList.map(String).includes(message.author.id)) {
+        logger.debug(`Discord: user ${message.author.id} not in allowlist for channel ${message.channel.id}`);
+        return;
+      }
+    } else if (!isChannelEmployee && this.allowedUserIds.size > 0 && !this.allowedUserIds.has(message.author.id)) {
+      // Global allowlist only applies to non-employee channels
+      return;
+    }
 
     if (!this.handler) return;
 

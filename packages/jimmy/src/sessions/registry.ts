@@ -95,6 +95,8 @@ function rowToSession(row: Record<string, unknown>): Session {
     createdAt: row.created_at as string,
     lastActivity: row.last_activity as string,
     lastError: (row.last_error as string) ?? null,
+    lastMessage: (row.last_message_content as string) ?? null,
+    lastMessageRole: (row.last_message_role as string) ?? null,
   };
 }
 
@@ -393,7 +395,17 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const rows = db.prepare(`SELECT * FROM sessions ${where} ORDER BY last_activity DESC`).all(...values) as Record<string, unknown>[];
+  const rows = db.prepare(`
+    SELECT sessions.*, last_msg.content as last_message_content, last_msg.role as last_message_role
+    FROM sessions
+    LEFT JOIN (
+      SELECT session_id, content, role, MAX(timestamp) as msg_ts
+      FROM messages
+      GROUP BY session_id
+    ) last_msg ON sessions.id = last_msg.session_id
+    ${where}
+    ORDER BY sessions.last_activity DESC
+  `).all(...values) as Record<string, unknown>[];
   return rows.map(rowToSession);
 }
 
@@ -496,10 +508,26 @@ export function getMessages(sessionId: string): SessionMessage[] {
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
 }
 
+export function deleteMessagesByRole(sessionId: string, role: string): number {
+  const db = initDb();
+  const result = db.prepare('DELETE FROM messages WHERE session_id = ? AND role = ?').run(sessionId, role);
+  return result.changes;
+}
+
 export function deleteMessages(sessionId: string): number {
   const db = initDb();
   const result = db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
   return result.changes;
+}
+
+/**
+ * Return the number of messages stored for a session without loading their content.
+ * Used by the auto-compact threshold check.
+ */
+export function getMessageCount(sessionId: string): number {
+  const db = initDb();
+  const row = db.prepare('SELECT COUNT(*) as count FROM messages WHERE session_id = ?').get(sessionId) as { count: number } | undefined;
+  return row?.count ?? 0;
 }
 
 export interface QueueItem {

@@ -40,6 +40,7 @@ interface Config {
     default?: string
     claude?: { bin?: string; model?: string; effortLevel?: string }
     codex?: { bin?: string; model?: string; effortLevel?: string }
+    modelCap?: string
   }
   sessions?: {
     maxDurationMinutes?: number
@@ -902,6 +903,29 @@ export default function SettingsPage() {
 
               {/* -- Section 4: Engine Configuration -- */}
               <Section title="Engine Configuration">
+                <div className="border-b border-[var(--separator)] pb-[var(--space-3)] mb-[var(--space-3)]">
+                  <FieldRow label="Model Cap">
+                    <div className="flex items-center gap-[var(--space-2)]">
+                      <ToggleSwitch
+                        checked={!!config.engines?.modelCap}
+                        onChange={(on) => updateConfig(['engines', 'modelCap'], on ? 'sonnet' : '')}
+                      />
+                      {config.engines?.modelCap && (
+                        <SettingsSelect
+                          value={config.engines.modelCap}
+                          onChange={(v) => updateConfig(['engines', 'modelCap'], v)}
+                          options={[
+                            { value: 'sonnet', label: 'Sonnet (max)' },
+                            { value: 'haiku', label: 'Haiku (max)' },
+                          ]}
+                        />
+                      )}
+                    </div>
+                  </FieldRow>
+                  <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] px-[var(--space-2)] mt-[var(--space-1)]">
+                    When enabled, all sessions (including yours) are capped to this model tier or below.
+                  </div>
+                </div>
                 <div
                   className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
                 >

@@ -20,6 +20,8 @@ interface Session {
   status: "idle" | "running" | "error";
   transportState?: "idle" | "queued" | "running" | "error";
   queueDepth?: number;
+  lastMessage?: string | null;
+  lastMessageRole?: string | null;
   lastActivity: string;
 }
 
@@ -130,15 +132,25 @@ export function SessionList({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-[var(--space-2)] mb-0.5">
                     <span className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] overflow-hidden text-ellipsis whitespace-nowrap">
-                      {s.title || s.employee || portalName}
+                      {s.lastMessage
+                        ? (s.lastMessage.length > 80 ? s.lastMessage.substring(0, 80) + "…" : s.lastMessage)
+                        : (s.title || s.employee || portalName)}
                     </span>
                     <Badge variant={statusVariant[s.status] ?? "secondary"}>
                       {statusLabel[s.transportState || s.status] || s.transportState || s.status}
                     </Badge>
                   </div>
                   <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] flex gap-[var(--space-3)]">
-                    <span>{s.connector || s.source}</span>
-                    <span>{s.employee || portalName}</span>
+                    {s.lastMessage ? (
+                      <span className="overflow-hidden text-ellipsis whitespace-nowrap">
+                        {s.title || s.employee || portalName}
+                      </span>
+                    ) : (
+                      <>
+                        <span>{s.connector || s.source}</span>
+                        <span>{s.employee || portalName}</span>
+                      </>
+                    )}
                     {typeof s.queueDepth === "number" && s.queueDepth > 0 ? <span>Queue {s.queueDepth}</span> : null}
                   </div>
                 </div>

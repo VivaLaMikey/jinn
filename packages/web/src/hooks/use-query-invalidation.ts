@@ -32,6 +32,15 @@ export function useQueryInvalidation() {
             qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
           }
           break
+        case 'session:stopped':
+        case 'session:queued':
+        case 'session:resumed':
+        case 'session:updated':
+          pendingRef.current.add('sessions')
+          if (p?.sessionId) {
+            qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
+          }
+          break
         case 'cron:completed':
         case 'cron:error':
           pendingRef.current.add('cron')
