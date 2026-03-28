@@ -8,6 +8,7 @@ import type {
   Session,
   Target,
 } from "../shared/types.js";
+import { isInterruptibleEngine } from "../shared/types.js";
 import {
   accumulateSessionCost,
   createSession,
@@ -219,6 +220,19 @@ export class SessionManager {
     const hasExistingBuffer = this.debounceBuffers.has(msg.sessionKey);
 
     if (isBusy || hasExistingBuffer) {
+      // Interrupt running engine if configured — steer instead of queue.
+      // Only interrupt for real user messages, not buffered debounce accumulations.
+      const interruptEnabled = this.config.sessions?.interruptOnNewMessage ?? true;
+      if (interruptEnabled && !hasExistingBuffer && session.status === "running") {
+        const engine = this.engines.get(session.engine);
+        if (engine && isInterruptibleEngine(engine) && engine.isAlive(session.id)) {
+          logger.info(`Interrupting running session ${session.id} for new message from ${msg.source}`);
+          engine.kill(session.id, "Interrupted: new message received");
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          this.emit("session:interrupted", { sessionId: session.id, reason: "new message" });
+        }
+      }
+
       // Add clock1 reaction to each individual message as it arrives
       if (connector.getCapabilities().reactions) {
         await connector.addReaction(target, "clock1").catch(() => {});
