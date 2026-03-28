@@ -17,6 +17,8 @@ const RATE_LIMIT_PATTERNS = [
   /usage.*limit/i,
   /exceeded.*limit/i,
   /out of extra usage/i,
+  /overloaded/i,
+  /try again/i,
 ];
 
 /** Errors that are genuinely transient server/network errors — safe to fast-retry */
@@ -28,7 +30,6 @@ const TRANSIENT_PATTERNS = [
   /internal.server.error/i,
   /503/,
   /529/,
-  /overloaded/i,
   /spawn.*EAGAIN/i,
 ];
 
