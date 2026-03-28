@@ -422,10 +422,15 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
 export function recoverStaleSessions(): number {
   const db = initDb();
   const now = new Date().toISOString();
-  const result = db.prepare(
+  const running = db.prepare(
     "UPDATE sessions SET status = 'interrupted', last_activity = ?, last_error = 'Interrupted: gateway restarted while session was running' WHERE status = 'running'",
   ).run(now);
-  return result.changes;
+  // Also recover "waiting" sessions (rate-limited) — their in-memory retry loops
+  // are lost when the gateway restarts, so mark them as interrupted for auto-resume.
+  const waiting = db.prepare(
+    "UPDATE sessions SET status = 'interrupted', last_activity = ?, last_error = 'Interrupted: gateway restarted while session was waiting for rate limit reset' WHERE status = 'waiting'",
+  ).run(now);
+  return running.changes + waiting.changes;
 }
 
 /**

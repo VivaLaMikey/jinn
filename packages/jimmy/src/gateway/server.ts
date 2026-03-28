@@ -8,7 +8,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, cleanupExpiredSessions } from "../sessions/registry.js";
+import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, cleanupExpiredSessions, getMessages } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
@@ -825,6 +825,37 @@ export async function startGateway(
         resumableSessions: resumable.length,
       });
     }
+
+    // Auto-resume sessions that were waiting for rate limit reset.
+    // These had in-memory retry loops that were lost when the gateway restarted.
+    const rateLimitInterrupted = resumable.filter(s =>
+      s.lastError?.includes("waiting for rate limit reset"),
+    );
+    if (rateLimitInterrupted.length > 0) {
+      logger.info(`Auto-resuming ${rateLimitInterrupted.length} rate-limited session(s)...`);
+      let delay = 0;
+      for (const s of rateLimitInterrupted) {
+        const messages = getMessages(s.id);
+        const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+        if (!lastUserMsg) {
+          logger.warn(`No user message found for session ${s.id} — skipping auto-resume`);
+          continue;
+        }
+        // Stagger resumes by 2s to avoid overwhelming the engine
+        setTimeout(() => {
+          fetch(`http://${host}:${port}/api/sessions/${s.id}/message`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: lastUserMsg.content }),
+          }).then(() => {
+            logger.info(`Auto-resumed rate-limited session ${s.id} (${s.employee || "no employee"})`);
+          }).catch((err: unknown) => {
+            logger.warn(`Failed to auto-resume session ${s.id}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }, delay);
+        delay += 2000;
+      }
+    }
   }, 1000);
 
   // Prevent macOS from sleeping while the gateway is running
@@ -852,16 +883,18 @@ export async function startGateway(
       logger.info("caffeinate stopped");
     }
 
-    // Mark all running sessions as "interrupted" before killing engine processes.
+    // Mark all running and waiting sessions as "interrupted" before killing engine processes.
     // This preserves their engine_session_id so they can be resumed on next startup.
+    // "waiting" sessions have in-memory retry loops that are lost on shutdown.
     const runningSessions = listSessions({ status: "running" });
-    for (const session of runningSessions) {
+    const waitingSessions = listSessions({ status: "waiting" });
+    for (const session of [...runningSessions, ...waitingSessions]) {
       updateSession(session.id, {
         status: "interrupted",
         lastActivity: new Date().toISOString(),
-        lastError: "Interrupted: gateway shutting down gracefully",
+        lastError: `Interrupted: gateway shutting down gracefully (was ${session.status})`,
       });
-      logger.info(`Marked session ${session.id} as interrupted for resume`);
+      logger.info(`Marked session ${session.id} as interrupted for resume (was ${session.status})`);
     }
 
     // Terminate live engine subprocesses after marking sessions.

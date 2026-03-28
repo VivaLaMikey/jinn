@@ -128,10 +128,13 @@ export function notifyRateLimited(
 ): void {
   if (!childSession.parentSessionId) return;
 
-  _sendNotification(childSession, {
-    error: null,
-    result: `⏳ Session is rate-limited and will auto-resume${estimatedResumeTime ? ` around ${estimatedResumeTime}` : ' when the limit resets'}. No action needed.`,
-  }).catch((err) => {
+  // Use _sendRaw directly — NOT _sendNotification which wraps in "📩 completed a task"
+  // framing, causing the parent COO to falsely interpret rate limits as task completion.
+  const employeeName = childSession.employee || "Unknown";
+  _sendRaw(
+    childSession.parentSessionId,
+    `⏳ ${employeeName} (session ${childSession.id}) hit rate limit — will auto-resume${estimatedResumeTime ? ` around ${estimatedResumeTime}` : ' when the limit resets'}. No action needed — do NOT treat this as task completion.`,
+  ).catch((err) => {
     logger.warn(`[callbacks] Failed to send rate-limit notification: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
