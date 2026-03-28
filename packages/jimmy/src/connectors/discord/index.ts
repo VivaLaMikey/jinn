@@ -407,7 +407,10 @@ export class DiscordConnector implements Connector {
     ) return;
 
     // Guild restriction
-    if (this.config.guildId && message.guild?.id !== this.config.guildId) return;
+    if (this.config.guildId && message.guild?.id !== this.config.guildId) {
+      logger.debug(`Discord: ignoring message from guild ${message.guild?.id} (expected ${this.config.guildId})`);
+      return;
+    }
 
     // Channel routing — proxy messages to remote instances
     const routeTarget = this.config.channelRouting?.[message.channel.id];
@@ -421,7 +424,10 @@ export class DiscordConnector implements Connector {
     const isChannelEmployee = !!this.config.channelEmployees?.[message.channel.id];
 
     // Channel restriction — only respond in configured channel (+ DMs + explicitly routed channels)
-    if (this.config.channelId && message.channel.id !== this.config.channelId && !message.channel.isDMBased() && !isChannelEmployee) return;
+    if (this.config.channelId && message.channel.id !== this.config.channelId && !message.channel.isDMBased() && !isChannelEmployee) {
+      logger.debug(`Discord: ignoring message in channel ${message.channel.id} (not in configured channel/employee/DM)`);
+      return;
+    }
 
     // Per-channel allowlist (takes precedence over global allowFrom for that channel)
     // channelEmployee channels are open to any user — global allowFrom does not apply
@@ -433,6 +439,7 @@ export class DiscordConnector implements Connector {
       }
     } else if (!isChannelEmployee && this.allowedUserIds.size > 0 && !this.allowedUserIds.has(message.author.id)) {
       // Global allowlist only applies to non-employee channels
+      logger.debug(`Discord: user ${message.author.id} (${message.author.username}) not in global allowlist`);
       return;
     }
 
@@ -592,10 +599,10 @@ export class DiscordConnector implements Connector {
 
   /** Handle /jnew slash command — zero tokens */
   private async handleNewSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    const sessionKey = `discord:${interaction.channelId}`;
+    const sessionKey = `${this.instanceId}:${interaction.channelId}`;
     if (this.handler) {
       const fakeMsg: IncomingMessage = {
-        connector: "discord",
+        connector: this.instanceId,
         source: "discord",
         sessionKey,
         channel: interaction.channelId,

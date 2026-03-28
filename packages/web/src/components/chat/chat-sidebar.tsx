@@ -45,6 +45,8 @@ interface Session {
   queueDepth?: number
   lastActivity?: string
   createdAt?: string
+  lastMessage?: string | null
+  lastMessageRole?: string | null
   [key: string]: unknown
 }
 
@@ -589,7 +591,8 @@ export function ChatSidebar({
     const sessionIsActive = session.id === selectedId
     const sessionDotColor = getStatusDotColor(session, readSessions)
     const sessionIsRunning = session.status === "running"
-    const sessionTitle = fixTitle(session.title, session.employee)
+    const rawPreview = (session.lastMessage as string | null | undefined) || session.title
+    const sessionTitle = fixTitle(rawPreview, session.employee)
     const displayTitle = cleanPreview(sessionTitle) || sessionTitle
     const sessionTime = formatTime(getSessionActivity(session))
     const isPinned = pinnedSessions.has(session.id)
