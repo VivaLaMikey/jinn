@@ -330,6 +330,7 @@ export class SessionManager {
 
     insertMessage(session.id, "user", msg.text);
     this.emit("session:message", { sessionId: session.id, role: "user", content: msg.text });
+    this.emit("session:started", { sessionId: session.id, engine: session.engine, employee: session.employee });
 
     const capabilities = connector.getCapabilities();
     const decorateMessages = session.source !== "cron";
@@ -596,6 +597,13 @@ export class SessionManager {
             if (updated) {
               notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
+            this.emit("session:completed", {
+              sessionId: session.id,
+              result: fallbackText,
+              error: fallbackResult.error || null,
+              cost: fallbackResult.cost,
+              durationMs: fallbackResult.durationMs,
+            });
             return;
           }
         }
@@ -615,6 +623,11 @@ export class SessionManager {
             status: "error",
             lastActivity: new Date().toISOString(),
             lastError: "Circuit breaker open — too many consecutive failures",
+          });
+          this.emit("session:completed", {
+            sessionId: session.id,
+            result: null,
+            error: "Circuit breaker open — too many consecutive failures",
           });
           await connector.replyMessage(
             target,
@@ -785,6 +798,13 @@ export class SessionManager {
               );
               notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
+            this.emit("session:completed", {
+              sessionId: session.id,
+              result: retryText,
+              error: retryResult.error || null,
+              cost: retryResult.cost,
+              durationMs: retryResult.durationMs,
+            });
             logger.info(`Session ${session.id} resumed after usage reset`);
             return;
           }
@@ -798,6 +818,12 @@ export class SessionManager {
             status: "error",
             lastActivity: new Date().toISOString(),
             lastError: "Claude usage limit did not clear in time",
+          });
+
+          this.emit("session:completed", {
+            sessionId: session.id,
+            result: null,
+            error: "Claude usage limit did not clear in time",
           });
 
           // Clear reactions on failure
@@ -852,6 +878,15 @@ export class SessionManager {
         }
       }
 
+      this.emit("session:completed", {
+        sessionId: session.id,
+        employee: session.employee || undefined,
+        result: responseText,
+        error: result.error || null,
+        cost: result.cost,
+        durationMs: result.durationMs,
+      });
+
       logger.info(
         `Session ${session.id} completed in ${result.durationMs ?? 0}ms` +
         (result.cost ? ` ($${result.cost.toFixed(4)})` : ""),
@@ -868,6 +903,12 @@ export class SessionManager {
       if (erroredSession) {
         notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
       }
+
+      this.emit("session:completed", {
+        sessionId: session.id,
+        result: null,
+        error: errMsg,
+      });
 
       // Clear typing indicator on error
       if (decorateMessages && connector.setTypingStatus) {

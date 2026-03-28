@@ -69,11 +69,15 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
+  const loadingRef = useRef(false)
+  useEffect(() => { loadingRef.current = loading }, [loading])
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
   const intermediateStartRef = useRef<number>(-1)
   const [currentSession, setCurrentSession] = useState<Record<string, unknown> | null>(null)
   const sessionIdRef = useRef(sessionId)
+  const externalMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadSessionRef = useRef<((id: string) => Promise<void>) | null>(null)
 
   // Employee picker state for new chat
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
@@ -109,7 +113,7 @@ export function ChatPane({
 
   // Listen for session events via subscribe
   useEffect(() => {
-    return subscribe((event, payload) => {
+    const unsub = subscribe((event, payload) => {
       const p = payload as Record<string, unknown>
       const sid = sessionIdRef.current
       if (!sid || p.sessionId !== sid) return
@@ -201,6 +205,34 @@ export function ChatPane({
         setStreamingText('')
       }
 
+      if (event === 'session:message') {
+        // Emitted by the backend for connector-originated messages (Discord, Slack, peer messages).
+        // These are complete messages, not streaming deltas — append directly to state.
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: (p.role as 'user' | 'assistant') || 'assistant',
+            content: String(p.content || ''),
+            timestamp: Date.now(),
+          },
+        ])
+        // Safety net: schedule a full reload from backend to ensure sync.
+        // Debounced so rapid messages (user + assistant) only trigger one reload.
+        if (externalMessageTimerRef.current) clearTimeout(externalMessageTimerRef.current)
+        externalMessageTimerRef.current = setTimeout(() => {
+          if (sessionIdRef.current === sid) loadSessionRef.current?.(sid)
+        }, 2000)
+      }
+
+      if (event === 'session:started') {
+        // Emitted when a session begins running (including from another client/device).
+        // Only set loading if we are not already sending locally (avoids double-spinner).
+        if (!loadingRef.current) {
+          setLoading(true)
+        }
+      }
+
       if (event === 'session:completed') {
         streamingTextRef.current = ''
         setStreamingText('')
@@ -244,6 +276,10 @@ export function ChatPane({
         onRefresh?.()
       }
     })
+    return () => {
+      unsub()
+      if (externalMessageTimerRef.current) clearTimeout(externalMessageTimerRef.current)
+    }
   }, [subscribe, persistIntermediate, onRefresh])
 
   // Load session data
@@ -305,6 +341,7 @@ export function ChatPane({
       intermediateStartRef.current = -1
     }
   }, [onSessionMetaChange])
+  loadSessionRef.current = loadSession
 
   // Load on session change
   useEffect(() => {

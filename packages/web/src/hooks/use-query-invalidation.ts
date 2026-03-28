@@ -51,6 +51,13 @@ export function useQueryInvalidation() {
             qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
           }
           break
+        case 'session:message':
+          // Connector-originated messages (Discord, Slack, peer) — refresh session list and detail
+          pendingRef.current.add('sessions')
+          if (p?.sessionId) {
+            qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
+          }
+          break
         case 'cron:completed':
         case 'cron:error':
           pendingRef.current.add('cron')
