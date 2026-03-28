@@ -268,6 +268,21 @@ export interface Department {
   description: string;
 }
 
+/**
+ * Well-known fields that can be set on a session's transportMeta to control
+ * gateway behaviour. Additional arbitrary keys are allowed (the field is typed
+ * as JsonObject at the DB layer).
+ */
+export interface TransportMeta {
+  /**
+   * When true, the completion callback will wake the parent COO session via
+   * POST /api/sessions/:parentId/message instead of the passive /notify endpoint.
+   * Use this when you need the COO to actively process the completion result.
+   */
+  wakeParent?: boolean;
+  [key: string]: unknown;
+}
+
 /** Stdio-based MCP server (spawned as child process) */
 export interface McpServerStdioConfig {
   /** Shell command to start the MCP server */

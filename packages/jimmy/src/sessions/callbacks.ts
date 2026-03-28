@@ -78,6 +78,16 @@ async function notifyViaHikuiSummary(
     `Task: ${childSession.title || employeeName}. ` +
     `Result preview: ${resultPreview}`;
 
+  const childMeta2 = (childSession.transportMeta || {}) as Record<string, unknown>;
+  const hikuiMeta: Record<string, unknown> = {
+    _summaryFor: childSession.parentSessionId,
+  };
+  // Propagate wakeParent so the api.ts Hikui completion handler knows to
+  // actively wake the COO instead of posting passively via /notify.
+  if (childMeta2.wakeParent === true) {
+    hikuiMeta.wakeParent = true;
+  }
+
   await fetch(`http://127.0.0.1:${port}/api/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -86,9 +96,7 @@ async function notifyViaHikuiSummary(
       model: "haiku",
       prompt: summaryPrompt,
       parentSessionId: childSession.parentSessionId,
-      transportMeta: {
-        _summaryFor: childSession.parentSessionId,
-      },
+      transportMeta: hikuiMeta,
     }),
   });
 }

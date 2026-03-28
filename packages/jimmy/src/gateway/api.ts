@@ -3135,14 +3135,27 @@ async function runWebSession(
         const connector = config.notifications?.connector || "discord";
         const channel = config.notifications?.channel;
 
-        // Post passively to the parent session chat (display-only, no AI turn)
-        fetch(`http://127.0.0.1:${gatewayPort}/api/sessions/${summaryFor}/notify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: summary, role: "notification" }),
-        }).catch((err) => {
-          logger.warn(`[hikui-summary] Failed to post summary to parent ${summaryFor}: ${err instanceof Error ? err.message : String(err)}`);
-        });
+        // Post to the parent session. When wakeParent is set, use /message so the
+        // COO engine is actively woken to process the completion. Otherwise use
+        // /notify for a passive display-only notification.
+        const shouldWakeParent = completedMeta.wakeParent === true;
+        if (shouldWakeParent) {
+          fetch(`http://127.0.0.1:${gatewayPort}/api/sessions/${summaryFor}/message`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: `[Employee completion] ${summary}`, role: "notification" }),
+          }).catch((err) => {
+            logger.warn(`[hikui-summary] Failed to wake parent ${summaryFor}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } else {
+          fetch(`http://127.0.0.1:${gatewayPort}/api/sessions/${summaryFor}/notify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: summary, role: "notification" }),
+          }).catch((err) => {
+            logger.warn(`[hikui-summary] Failed to post summary to parent ${summaryFor}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
 
         // Post to Discord if a channel is configured
         if (channel) {
